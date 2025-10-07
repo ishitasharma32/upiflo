@@ -983,9 +983,11 @@ function CtaNudgeOverlay({
 function HunFullScreenBanner({
     visible,
     message,
+    onClose,
 }: {
     visible: boolean
     message: string
+    onClose?: () => void
 }) {
     return (
         <Portal>
@@ -1007,7 +1009,7 @@ function HunFullScreenBanner({
                             padding: "96px 20px 40px",
                             gap: 32,
                             zIndex: 2147483646,
-                            pointerEvents: "none",
+                            pointerEvents: "auto",
                         }}
                     >
                         <motion.div
@@ -1025,7 +1027,7 @@ function HunFullScreenBanner({
                                 padding: "28px 24px",
                                 boxShadow: "0 30px 90px rgba(0,0,0,0.45)",
                                 textAlign: "center",
-                                pointerEvents: "none",
+                                pointerEvents: "auto",
                             }}
                         >
                             <div
@@ -1057,6 +1059,29 @@ function HunFullScreenBanner({
                                 Tap the WhatsApp notification banner above to view the receipt and
                                 continue the conversation.
                             </div>
+                            {onClose && (
+                                <div
+                                    style={{
+                                        marginTop: 20,
+                                    }}
+                                >
+                                    <button
+                                        onClick={onClose}
+                                        style={{
+                                            padding: "12px 22px",
+                                            borderRadius: 14,
+                                            border: 0,
+                                            background: "#1677FF",
+                                            color: "#FFFFFF",
+                                            fontWeight: 900,
+                                            fontSize: 16,
+                                            cursor: "pointer",
+                                        }}
+                                    >
+                                        OK
+                                    </button>
+                                </div>
+                            )}
                         </motion.div>
 
                         <motion.div
@@ -2545,6 +2570,7 @@ export default function Upigff({
                     <HunFullScreenBanner
                         visible={showHunBanner && showHUN}
                         message={NUDGE_HUN}
+                        onClose={() => setShowHunBanner(false)}
                     />
 
                     {/* Spotlight for HUN (optional nudge) */}
