@@ -1,0 +1,3679 @@
+import * as React from "react"
+import { useEffect, useMemo, useRef, useState, useLayoutEffect } from "react"
+import { createPortal } from "react-dom"
+import { motion, AnimatePresence } from "framer-motion"
+import { addPropertyControls, ControlType } from "framer"
+
+/* ───────────────── Fullscreen portal (with absolute top-layer) ───────────────── */
+const TOP_LAYER_ID = "nudge-top-layer"
+
+function FullScreenPortal({ children }: { children: React.ReactNode }) {
+    const [mounted, setMounted] = React.useState(false)
+    React.useEffect(() => {
+        setMounted(true)
+        const root = document.documentElement
+        const body = document.body
+        const prev = {
+            htmlBg: root.style.background,
+            bodyBg: body.style.background,
+            bodyMargin: body.style.margin,
+            bodyOverflow: body.style.overflow,
+        }
+        root.style.background = "#FFFFFF"
+        body.style.background = "#FFFFFF"
+        body.style.margin = "0"
+        body.style.overflow = "hidden"
+        return () => {
+            root.style.background = prev.htmlBg
+            body.style.background = prev.bodyBg
+            body.style.margin = prev.bodyMargin
+            body.style.overflow = prev.bodyOverflow
+        }
+    }, [])
+    if (!mounted) return null
+    return createPortal(
+        <div
+            style={{
+                position: "fixed",
+                inset: 0,
+                width: "100vw",
+                height: "100svh",
+                overflow: "hidden",
+                zIndex: 999999, // main app layer
+                background: "#FFFFFF",
+            }}
+        >
+            {children}
+
+            {/* Absolute top-most layer for ALL overlays (halos, banners, etc.) */}
+            <div
+                id={TOP_LAYER_ID}
+                style={{
+                    position: "fixed",
+                    inset: 0,
+                    zIndex: 2147483647,
+                    pointerEvents: "none", // children set pointerEvents: auto
+                }}
+            />
+        </div>,
+        document.body
+    )
+}
+
+/* ========= Config ========= */
+const DUE_AMOUNT = 40000
+const UPI_PAY_AMOUNT = 40000
+const UPI_PAYEE_NAME = "Dushyant Garg"
+const UPI_PAYEE_VPA = "Dushyant06262202@ok"
+const SOUND_ENABLED = true
+
+/* ---- Hosted logos ---- */
+const LOGO_PHONEPE =
+    "https://res.cloudinary.com/dyko2numc/image/upload/v1759336438/unnamed_vspwpr.webp"
+const LOGO_GPAY =
+    "https://res.cloudinary.com/dyko2numc/image/upload/v1759336424/unnamed_2_jptdhn.png"
+const LOGO_PAYTM =
+    "https://res.cloudinary.com/dyko2numc/image/upload/v1759336415/Paytm-Logo_iwa58h.webp"
+const LOGO_BHIM =
+    "https://res.cloudinary.com/dyko2numc/image/upload/v1759336460/download_r9lsmu.png"
+
+/* ---- Theme & WA palette ---- */
+const color = { red: "#e11d48", inCallText: "#0A1F44" }
+const wa = {
+    header: "#075E54",
+    bg: "#ECE5DD",
+    user: "#DCF8C6",
+    bot: "#FFFFFF",
+    linkBlue: "#1B80FF",
+    tickBlue: "#34B7F1",
+    tickGrey: "#9AA0A6",
+}
+
+/* ---- pacing ---- */
+const GAP = 3000
+const BOTTOM_OFFSET = 120
+const ONCALL_BAR_H = 14
+const ONCALL_EXTRA = 10
+const ONCALL_BOTTOM_PAD = 20 // tweak to taste
+const ONCALL_OFFSET_CSS = `calc(${ONCALL_BAR_H}px + env(safe-area-inset-top) + ${ONCALL_EXTRA}px)`
+const ONCALL_H = 14
+const fs = (px: number) => Math.round(px * WA_TEXT_SCALE)
+
+const WA_TEXT_SCALE =
+    typeof window !== "undefined"
+        ? ((window as any).visualViewport?.width ?? window.innerWidth) <= 520
+            ? 1.22 // ↑ bumped for realistic phone sizing
+            : 1.1
+        : 1.0
+
+/* ---- audio ---- */
+const NOTIF_SRC =
+    "https://res.cloudinary.com/dyko2numc/video/upload/v1759216624/Iphone_Sms_Tone_udalfd.mp3"
+const RINGTONE_SRC =
+    "https://res.cloudinary.com/dyko2numc/video/upload/v1759216444/iphone_original_afs8ov.mp3"
+const BOT_VOICE_SRC =
+    "https://res.cloudinary.com/dyko2numc/video/upload/v1759430357/gff-upi-bot-1_Gd6wUdj0_htruwe.mp3"
+const SUCCESS_TRANSCRIPT_AUDIO =
+    "https://res.cloudinary.com/dyko2numc/video/upload/v1759478569/GFF_UPI_After_Bot_mdhpeg.mp3"
+
+/* ---- receipt (mock) ---- */
+const MOCK_RECEIPT_PDF_URL =
+    "https://res.cloudinary.com/dyko2numc/raw/upload/v1759479175/Payment_Receipt_Mock.pdf"
+
+/* ---- Copy ---- */
+const NUDGE_UPI_PIN = "Enter any 4-digit UPI PIN."
+const NUDGE_CONTINUE = "Tap Continue to proceed."
+const NUDGE_DONE = "Tap Done to finish."
+const NUDGE_HUN = "Tap the WhatsApp notification to continue."
+
+/* ---- Analytics stub ---- */
+function logEvent(_name: string, _props: Record<string, any> = {}) {}
+
+/* ---- Types ---- */
+type Phase = "incoming" | "incall" | "chat" | "gateway" | "handoff"
+interface CTA {
+    label: string
+    onClick: () => void
+    refHook?: React.RefObject<HTMLButtonElement | null>
+}
+interface Msg {
+    id: string
+    from: "bot" | "user"
+    text?: string | React.ReactNode
+    cta?: CTA
+    ctas?: CTA[]
+    meta?: { time?: string; status?: "sent" | "delivered" | "read" }
+}
+type TranscriptLine = { t: number; text: string }
+
+/* ========= Icons ========= */
+function DoubleTick({ color = wa.tickGrey }: { color?: string }) {
+    return (
+        <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke={color}
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+        >
+            <polyline points="16 7 9.5 13.5 7 11" />
+            <polyline points="21 7 14.5 13.5 12 11" />
+        </svg>
+    )
+}
+const IconPhonePlus = () => (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="#fff" aria-hidden>
+        <path d="M22 16.92v3a2 2 0 0 1-2.2 2c-7.9-1-14-7.1-15-15A2 2 0 0 1 6 2h3" />
+        <path d="M15 3h6M18 0v6" transform="translate(-3 3)" />
+    </svg>
+)
+const IconDots = () => (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="#fff" aria-hidden>
+        <circle cx="12" cy="5" r="2" />
+        <circle cx="12" cy="12" r="2" />
+        <circle cx="12" cy="19" r="2" />
+    </svg>
+)
+const IconChevron = () => (
+    <svg
+        width="22"
+        height="22"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="#fff"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+    >
+        <polyline points="15 18 9 12 15 6" />
+    </svg>
+)
+function IconCrossWhite({ size = 18 }: { size?: number }) {
+    return (
+        <svg
+            width={size}
+            height={size}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="#fff"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+        >
+            <path d="M18 6 6 18M6 6l12 12" />
+        </svg>
+    )
+}
+
+/* ---- WA Header Phone Icon (24x24 crisp SVG) ---- */
+function WAHeaderPhoneIcon({
+    size = 24,
+    stroke = "#FFFFFF",
+}: {
+    size?: number
+    stroke?: string
+}) {
+    return (
+        <svg
+            width={size}
+            height={size}
+            viewBox="0 0 24 24"
+            preserveAspectRatio="xMidYMid meet"
+            fill="none"
+            stroke={stroke}
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            role="img"
+            aria-label="Call"
+        >
+            <path d="M22 16.92v2.1a2 2 0 0 1-2.18 2 a19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.98 3.3 2 2 0 0 1 5.07 1.1h2.1a2 2 0 0 1 2 1.72c.12.9.33 1.76.63 2.59a2 2 0 0 1-.45 2.11L8.5 9.47a16 16 0 0 0 6 6l1.95-1.85a2 2 0 0 1 2.11-.45c.83.3 1.69.51 2.59.63a2 2 0 0 1 1.72 2.12Z" />
+        </svg>
+    )
+}
+
+/* ---- Square “n” logo ---- */
+function SquareNLogo({ size = 96 }: { size?: number }) {
+    return (
+        <div
+            style={{
+                width: size,
+                height: size,
+                background: "#000",
+                color: "#fff",
+                display: "grid",
+                placeItems: "center",
+                fontWeight: 900,
+                fontSize: size * 0.55,
+                lineHeight: 1,
+                border: "1px solid rgba(0,0,0,0.2)",
+                borderRadius: 8,
+            }}
+            aria-label="nugget-logo"
+        >
+            n
+        </div>
+    )
+}
+
+/* ========= Portal util (mount into absolute top layer) ========= */
+function Portal({ children }: { children: React.ReactNode }) {
+    const [rootEl, setRootEl] = useState<HTMLElement | null>(null)
+    useEffect(() => {
+        setRootEl(document.getElementById(TOP_LAYER_ID) || document.body)
+    }, [])
+    return rootEl ? createPortal(children, rootEl) : null
+}
+
+/* ──────────────────────────────────────────────────────────────
+   SCROLL + INTERSECTION AWARE NUDGE (for all places)
+   ────────────────────────────────────────────────────────────── */
+function useArmableNudge(opts: {
+    armed: boolean
+    onDisarm: () => void
+    targetRef: React.RefObject<HTMLElement | null>
+    setVisible: (v: boolean) => void
+    autoHideMs?: number
+    appearDelayMs?: number
+    scrollParentRef?: React.RefObject<HTMLElement | null>
+}) {
+    const {
+        armed,
+        onDisarm,
+        targetRef,
+        setVisible,
+        autoHideMs = 3400,
+        appearDelayMs = 60,
+        scrollParentRef,
+    } = opts
+
+    useEffect(() => {
+        if (!armed) return
+
+        let hideTimer = 0
+        let raf1 = 0
+        let raf2 = 0
+        let io: IntersectionObserver | null = null
+        let mo: MutationObserver | null = null
+        let bailoutTimer = 0
+        let killed = false
+
+        const getNearestScrollable = (start: HTMLElement | null) => {
+            if (!start) return null
+            let el: HTMLElement | null = start
+            while (el && el !== document.body) {
+                const s = getComputedStyle(el)
+                if (
+                    (s.overflowY === "auto" || s.overflowY === "scroll") &&
+                    el.scrollHeight > el.clientHeight
+                )
+                    return el
+                el = el.parentElement
+            }
+            return null
+        }
+
+        const ensureVisible = (el: HTMLElement) => {
+            const root = scrollParentRef?.current || getNearestScrollable(el)
+            if (root) {
+                const rootRect = root.getBoundingClientRect()
+                const rect = el.getBoundingClientRect()
+                const delta =
+                    rect.top +
+                    rect.height / 2 -
+                    (rootRect.top + rootRect.height / 2)
+                root.scrollBy({ top: delta, behavior: "auto" })
+            } else {
+                el.scrollIntoView({
+                    block: "center",
+                    inline: "nearest",
+                    behavior: "auto",
+                })
+            }
+        }
+
+        const show = () => {
+            if (killed) return
+            setVisible(true)
+            onDisarm()
+            hideTimer = window.setTimeout(() => setVisible(false), autoHideMs)
+        }
+
+        const armOnTarget = (el: HTMLElement) => {
+            ensureVisible(el)
+            raf1 = requestAnimationFrame(() => {
+                raf2 = requestAnimationFrame(() => {
+                    const root =
+                        (scrollParentRef?.current as Element | null) ||
+                        getNearestScrollable(el)
+                    io = new IntersectionObserver(
+                        (entries) => {
+                            const it = entries[0]
+                            if (
+                                it?.isIntersecting &&
+                                it.intersectionRatio >= 0.3
+                            ) {
+                                io?.disconnect()
+                                io = null
+                                setTimeout(show, appearDelayMs)
+                            }
+                        },
+                        { root: root || null, threshold: [0, 0.3, 0.6, 1] }
+                    )
+                    io.observe(el)
+
+                    // bail out if still not intersecting fast enough
+                    bailoutTimer = window.setTimeout(() => {
+                        io?.disconnect()
+                        io = null
+                        show()
+                    }, 900)
+                })
+            })
+        }
+
+        const tryGet = () => {
+            const el = targetRef.current
+            if (el) {
+                armOnTarget(el)
+                return
+            }
+            mo = new MutationObserver(() => {
+                const n = targetRef.current
+                if (n) {
+                    mo?.disconnect()
+                    mo = null
+                    armOnTarget(n)
+                }
+            })
+            mo.observe(document.body, { childList: true, subtree: true })
+        }
+
+        tryGet()
+
+        return () => {
+            killed = true
+            clearTimeout(hideTimer)
+            clearTimeout(bailoutTimer)
+            cancelAnimationFrame(raf1)
+            cancelAnimationFrame(raf2)
+            io?.disconnect()
+            mo?.disconnect()
+        }
+    }, [
+        armed,
+        onDisarm,
+        targetRef,
+        setVisible,
+        autoHideMs,
+        appearDelayMs,
+        scrollParentRef,
+    ])
+}
+
+const HeadsUpNotification = React.forwardRef(function HeadsUpNotification(
+    {
+        visible,
+        title = "Nugget (WhatsApp)",
+        message,
+        onTap,
+        icon,
+        topOffset = 0, // ⬅️ NEW
+    }: {
+        visible: boolean
+        title?: string
+        message: string
+        onTap?: () => void
+        icon?: React.ReactNode
+        topOffset?: number
+    },
+    ref: React.ForwardedRef<HTMLButtonElement>
+) {
+    const clickable = !!onTap
+    return (
+        <motion.div
+            // shift both the hidden and shown states down by topOffset
+            initial={{ y: -80 + topOffset, opacity: 0 }}
+            animate={
+                visible
+                    ? { y: 12 + topOffset, opacity: 1 }
+                    : { y: -80 + topOffset, opacity: 0 }
+            }
+            transition={{ type: "spring", stiffness: 420, damping: 32 }}
+            style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                right: 0,
+                display: "grid",
+                placeItems: "center",
+                zIndex: 30, // > call bar (which is zIndex:20)
+                pointerEvents: clickable ? "auto" : "none",
+            }}
+        >
+            <button
+                ref={ref}
+                onClick={onTap}
+                style={{
+                    width: "92%",
+                    maxWidth: 360,
+                    background: "#F6F7F9",
+                    border: "1px solid rgba(0,0,0,0.08)",
+                    boxShadow: "0 14px 40px rgba(0,0,0,0.15)",
+                    borderRadius: 16,
+                    padding: "10px 12px",
+                    display: "grid",
+                    gridTemplateColumns: "auto 1fr auto",
+                    gap: 10,
+                    alignItems: "center",
+                    color: "#0A1F44",
+                    cursor: clickable ? "pointer" : "default",
+                }}
+                aria-disabled={!clickable}
+            >
+                {icon ?? (
+                    <div
+                        style={{
+                            width: 28,
+                            height: 28,
+                            borderRadius: 8,
+                            background: "#000",
+                            color: "#fff",
+                            display: "grid",
+                            placeItems: "center",
+                            fontWeight: 900,
+                            fontSize: 16,
+                            lineHeight: 1,
+                        }}
+                        aria-hidden
+                    >
+                        n
+                    </div>
+                )}
+                <div style={{ minWidth: 0, textAlign: "left" }}>
+                    <div
+                        style={{
+                            fontSize: 12,
+                            fontWeight: 800,
+                            marginBottom: 2,
+                        }}
+                    >
+                        {title}
+                    </div>
+                    <div
+                        style={{
+                            fontSize: 12.5,
+                            opacity: 0.85,
+                            display: "-webkit-box",
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: "vertical",
+                            overflow: "hidden",
+                        }}
+                    >
+                        {message}
+                    </div>
+                </div>
+                <div
+                    style={{
+                        width: 26,
+                        height: 26,
+                        borderRadius: 8,
+                        border: "1px solid rgba(0,0,0,0.12)",
+                        display: "grid",
+                        placeItems: "center",
+                        fontSize: 16,
+                        color: "rgba(0,0,0,0.6)",
+                    }}
+                    aria-hidden
+                >
+                    ▾
+                </div>
+            </button>
+        </motion.div>
+    )
+})
+
+/* ================= Spotlight Overlay (bright blue halo + fallback banner) ================= */
+
+/* ================= Numeric keypad ================= */
+function NumericKeypad({
+    onKey,
+    onBackspace,
+    onSubmit,
+    enabledSubmit = false,
+}: {
+    onKey: (n: number) => void
+    onBackspace: () => void
+    onSubmit: () => void
+    enabledSubmit?: boolean
+}) {
+    const grid: (string | number)[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, "bk", 0, "ok"]
+    return (
+        <div style={padWrap}>
+            {grid.map((k, i) => {
+                const isOk = k === "ok"
+                const isBk = k === "bk"
+                const style = isOk
+                    ? enabledSubmit
+                        ? { ...padKey, ...padKeyOk }
+                        : { ...padKey, ...padKeyOkDisabled }
+                    : isBk
+                      ? { ...padKey, ...padKeyBk }
+                      : padKey
+                return (
+                    <button
+                        key={i}
+                        onClick={() => {
+                            if (isOk) return enabledSubmit && onSubmit()
+                            if (isBk) return onBackspace()
+                            onKey(k as number)
+                        }}
+                        aria-label={
+                            isOk
+                                ? "Submit PIN"
+                                : isBk
+                                  ? "Backspace"
+                                  : `Key ${k}`
+                        }
+                        style={style}
+                    >
+                        {isOk ? "✓" : isBk ? "⌫" : k}
+                    </button>
+                )
+            })}
+        </div>
+    )
+}
+/* --------- REPLACE YOUR FinalTranscript WITH THIS VERSION --------- */
+function FinalTranscript({
+    audioSrc,
+    lines,
+    onDone,
+}: {
+    audioSrc: string
+    lines: TranscriptLine[]
+    onDone: () => void
+}) {
+    const audioRef = React.useRef<HTMLAudioElement | null>(null)
+    const onDoneRef = React.useRef(onDone)
+    const [t, setT] = React.useState(0)
+
+    // Fallback simulation state
+    const [simulating, setSimulating] = React.useState(false)
+    const simStartRef = React.useRef<number | null>(null)
+    const rafRef = React.useRef<number | null>(null)
+
+    // Small UI to let user start audio if blocked
+    const [showPlayChip, setShowPlayChip] = React.useState(false)
+    // REPLACE the whole totalDuration block with:
+    // REPLACE the whole totalDuration block with:
+    const totalDuration = React.useMemo(() => {
+        const last = lines.length ? lines[lines.length - 1].t : 0
+        return last + 1.0
+    }, [lines])
+
+    React.useEffect(() => {
+        onDoneRef.current = onDone
+    }, [onDone])
+
+    // Tear down helpers
+    const stopRAF = () => {
+        if (rafRef.current != null) {
+            cancelAnimationFrame(rafRef.current)
+            rafRef.current = null
+        }
+    }
+    const stopSim = () => {
+        setSimulating(false)
+        simStartRef.current = null
+        stopRAF()
+    }
+
+    // RAF-driven progress for simulation (or as a safety net)
+    const startSim = React.useCallback(() => {
+        setSimulating(true)
+        setShowPlayChip(true) // invite the user to tap if they want audio
+        simStartRef.current = performance.now()
+        const tick = () => {
+            if (!simStartRef.current) return
+            const elapsed = (performance.now() - simStartRef.current) / 1000
+            const clamped = Math.min(elapsed, totalDuration)
+            setT(clamped)
+            if (clamped >= totalDuration - 0.001) {
+                stopRAF()
+                stopSim()
+                onDoneRef.current?.()
+                return
+            }
+            rafRef.current = requestAnimationFrame(tick)
+        }
+        rafRef.current = requestAnimationFrame(tick)
+    }, [totalDuration])
+
+    // Create audio (only when src changes)
+    React.useEffect(() => {
+        // cleanup previous
+        stopRAF()
+        stopSim()
+        try {
+            audioRef.current?.pause()
+        } catch {}
+        audioRef.current = null
+        setT(0)
+        setShowPlayChip(false)
+
+        const a = new Audio(audioSrc)
+        a.preload = "auto"
+        a.playsInline = true as any // iOS Safari hint
+        a.crossOrigin = "anonymous"
+        audioRef.current = a
+
+        const onTime = () => {
+            setT(a.currentTime)
+            if (a.currentTime >= totalDuration - 0.001) {
+                // In case the audio is longer, still finish on our script timeline
+                onDoneRef.current?.()
+            }
+        }
+        const onEnded = () => onDoneRef.current?.()
+
+        a.addEventListener("timeupdate", onTime)
+        a.addEventListener("ended", onEnded)
+
+        // Attempt to play immediately (may be blocked)
+        const tryPlay = async () => {
+            try {
+                a.currentTime = 0
+                await a.play()
+                // Playback OK: hide the play chip and ensure not simulating
+                setShowPlayChip(false)
+                stopSim()
+            } catch {
+                // Autoplay blocked → simulate
+                startSim()
+            }
+        }
+        // Start now; if canplaythrough never fires, we still attempted
+        tryPlay()
+
+        return () => {
+            stopRAF()
+            try {
+                a.pause()
+            } catch {}
+            a.removeEventListener("timeupdate", onTime)
+            a.removeEventListener("ended", onEnded)
+        }
+    }, [audioSrc, startSim, totalDuration])
+
+    // Manual retry if user taps the chip
+    const handleUserPlay = async () => {
+        const a = audioRef.current
+        if (!a) return
+        try {
+            await a.play()
+            setShowPlayChip(false)
+            if (simulating) {
+                // Align audio with current simulated time
+                try {
+                    a.currentTime = Math.min(t, a.duration || t)
+                } catch {}
+                stopSim()
+            }
+        } catch {
+            // still blocked; keep simulating
+        }
+    }
+
+    // Which line is current?
+    const idx = React.useMemo(() => {
+        let i = 0
+        for (let k = 0; k < lines.length; k++) if (lines[k].t <= t) i = k
+        return i
+    }, [t, lines])
+
+    const before = lines[idx - 1]?.text ?? ""
+    const now = lines[idx]?.text ?? ""
+    const after = lines[idx + 1]?.text ?? ""
+
+    return (
+        <div
+            style={{
+                display: "grid",
+                placeItems: "center",
+                padding: "8px 0 4px",
+            }}
+        >
+            <div style={{ maxWidth: 320, textAlign: "center" }}>
+                {/* Optional “Tap to play” chip (only visible if autoplay blocked) */}
+                {showPlayChip && (
+                    <button
+                        onClick={handleUserPlay}
+                        style={{
+                            margin: "0 auto 10px",
+                            padding: "6px 10px",
+                            borderRadius: 999,
+                            border: "1px solid rgba(0,0,0,0.12)",
+                            background: "#FFFFFF",
+                            fontWeight: 800,
+                            cursor: "pointer",
+                            boxShadow: "0 1px 2px rgba(0,0,0,0.06)",
+                            fontSize: 12.5,
+                        }}
+                        aria-label="Play success voiceover"
+                        title="Play audio"
+                    >
+                        ▶︎ Tap to play audio
+                    </button>
+                )}
+
+                <motion.div
+                    key={`f-before-${before}`}
+                    initial={{ opacity: 0, y: -4 }}
+                    animate={{ opacity: 0.6, y: 0 }}
+                    transition={{ duration: 0.25 }}
+                    style={lineBefore}
+                >
+                    {before || " "}
+                </motion.div>
+                <motion.div
+                    key={`f-now-${now}`}
+                    initial={{ opacity: 0, scale: 0.98 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    transition={{ duration: 0.25 }}
+                    style={lineNow}
+                >
+                    {now || " "}
+                </motion.div>
+                <motion.div
+                    key={`f-after-${after}`}
+                    initial={{ opacity: 0, y: 4 }}
+                    animate={{ opacity: 0.6, y: 0 }}
+                    transition={{ duration: 0.25 }}
+                    style={lineAfter}
+                >
+                    {after || " "}
+                </motion.div>
+            </div>
+        </div>
+    )
+}
+
+/* Final transcript lines for the Paytm receipt screen */
+const finalTranscriptLines: TranscriptLine[] = [
+    {
+        t: 0,
+        text: "Thank you sir, aapki 40,000 ki payment receive ho gayi hai",
+    },
+    { t: 5, text: "Accha, aur mere refund ka kya scene hai?" },
+    {
+        t: 10,
+        text: "Sir aap chinta mat kariye, maine usko escalate karva diya hai. Aapko refund 24-48 hours mei aajega.",
+    },
+    { t: 16, text: "Theek hai." },
+    { t: 18, text: "Aur kisi tarah sei help kar sakti hun aapki?" },
+    { t: 21, text: "Nahi bas itna hi tha." },
+    {
+        t: 23,
+        text: " Got it sir, aapki payment confirmation whatsapp par bhi bhej di hai.",
+    },
+]
+function CtaNudgeOverlay({
+    visible,
+    targetRef,
+    message,
+    onClose,
+    blockClicks = false, // ✅ prop is blockClicks (plural)
+}: {
+    visible: boolean
+    targetRef: React.RefObject<HTMLElement>
+    message: string
+    onClose: () => void
+    blockClicks?: boolean
+}) {
+    const [rect, setRect] = React.useState<DOMRect | null>(null)
+
+    React.useEffect(() => {
+        if (!visible) return setRect(null)
+        const measure = () => {
+            const el = targetRef.current
+            setRect(el ? el.getBoundingClientRect() : null)
+        }
+        measure()
+        const ro = new ResizeObserver(measure)
+        const el = targetRef.current
+        if (el) ro.observe(el)
+        const onWin = () => measure()
+        window.addEventListener("resize", onWin)
+        window.addEventListener("scroll", onWin, { passive: true })
+        const id = requestAnimationFrame(measure)
+        return () => {
+            cancelAnimationFrame(id)
+            ro.disconnect()
+            window.removeEventListener("resize", onWin)
+            window.removeEventListener("scroll", onWin)
+        }
+    }, [visible, targetRef])
+
+    if (!visible) return null
+
+    return (
+        <Portal>
+            <AnimatePresence>
+                <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    style={{
+                        position: "fixed",
+                        inset: 0,
+                        zIndex: 2147483647,
+                        // ✅ pass-through when blockClicks=false (nudges)
+                        pointerEvents: blockClicks ? "auto" : "none",
+                    }}
+                >
+                    {/* Backdrop — visual only */}
+                    <div
+                        style={{
+                            position: "absolute",
+                            inset: 0,
+                            background: "rgba(0,0,0,.55)",
+                            pointerEvents: "none", // ✅ don’t eat clicks
+                        }}
+                    />
+
+                    {/* Halo — visual only */}
+                    {rect && (
+                        <motion.div
+                            aria-hidden
+                            initial={{ opacity: 0.85, scale: 0.95 }}
+                            animate={{
+                                opacity: [0.35, 0.5, 0.35],
+                                scale: [1, 1.06, 1],
+                            }}
+                            transition={{
+                                repeat: Infinity,
+                                duration: 1.1,
+                                ease: "easeInOut",
+                            }}
+                            style={{
+                                position: "absolute",
+                                top: rect.top - 14,
+                                left: rect.left - 22,
+                                width: rect.width + 44,
+                                height: rect.height + 32,
+                                borderRadius: 999,
+                                boxShadow:
+                                    "0 0 0 6px rgba(22,119,255,.75), 0 0 0 18px rgba(22,119,255,.28)",
+                                pointerEvents: "none", // ✅ don’t eat clicks
+                            }}
+                        />
+                    )}
+
+                    {/* Tooltip card — the ONLY clickable part */}
+                    <div
+                        style={{
+                            position: "absolute",
+                            left: 16,
+                            right: 16,
+                            ...(rect
+                                ? window.innerHeight - rect.bottom < 140 ||
+                                  rect.bottom > window.innerHeight * 0.72
+                                    ? {
+                                          bottom:
+                                              window.innerHeight -
+                                              rect.top +
+                                              28,
+                                      }
+                                    : { top: rect.bottom + 28 }
+                                : { bottom: 24 }),
+                            display: "grid",
+                            placeItems: "center",
+                            zIndex: 2147483648,
+                            pointerEvents: "auto", // ✅ allow clicking OK
+                        }}
+                    >
+                        <div
+                            style={{
+                                width: "100%",
+                                maxWidth: 360,
+                                background: "#FFFFFF",
+                                color: "#111",
+                                borderRadius: 14,
+                                border: "1px solid rgba(0,0,0,.06)",
+                                boxShadow: "0 20px 60px rgba(0,0,0,.35)",
+                                padding: "16px 14px",
+                                textAlign: "center",
+                                fontWeight: 800,
+                                fontSize: 18,
+                            }}
+                        >
+                            {message}
+                            <div>
+                                <button
+                                    onClick={onClose}
+                                    style={{
+                                        marginTop: 10,
+                                        padding: "10px 16px",
+                                        borderRadius: 12,
+                                        border: 0,
+                                        background: "#1677FF",
+                                        color: "#fff",
+                                        fontWeight: 900,
+                                        cursor: "pointer",
+                                    }}
+                                >
+                                    OK
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </motion.div>
+            </AnimatePresence>
+        </Portal>
+    )
+}
+
+/* ========= UPI Stepper (proceed screen removed; go straight to PIN) ========= */
+function UPIStepper({
+    amount = UPI_PAY_AMOUNT,
+    payee = UPI_PAYEE_NAME,
+    vpa = UPI_PAYEE_VPA,
+    onDone,
+    onExitToChat,
+}: {
+    amount?: number
+    payee?: string
+    vpa?: string
+    onDone: () => void
+    onExitToChat: () => void
+}) {
+    const continueBtnRef = React.useRef<HTMLButtonElement | null>(null)
+    const pinDotsRef = React.useRef<HTMLDivElement | null>(null)
+    // steps: 0 = provider, 1 = PIN, 2 = success
+    const [step, setStep] = useState(0)
+    const [provider] = useState<
+        "PhonePe" | "Google Pay" | "Paytm" | "BHIM UPI"
+    >("Paytm")
+
+    // Visible flags
+    const [showContinueNudge, setShowContinueNudge] = useState(false)
+    const [showPinNudge, setShowPinNudge] = useState(false)
+    const [showDoneNudge, setShowDoneNudge] = useState(false)
+
+    // Arms
+    const [armContinue, setArmContinue] = useState(false)
+    const [armPin, setArmPin] = useState(false)
+    const [armDone, setArmDone] = useState(false)
+
+    useEffect(() => {
+        if (step === 0) {
+            logEvent("gateway_opened")
+            setArmContinue(true)
+        }
+        if (step === 1) setArmPin(true)
+    }, [step])
+
+    useArmableNudge({
+        armed: armContinue,
+        onDisarm: () => setArmContinue(false),
+        targetRef: continueBtnRef as any,
+        setVisible: setShowContinueNudge,
+    })
+    useArmableNudge({
+        armed: armPin,
+        onDisarm: () => setArmPin(false),
+        targetRef: pinDotsRef as any,
+        setVisible: setShowPinNudge,
+    })
+
+    return (
+        <div style={fsWrap}>
+            {step < 2 && (
+                <div style={fsHeader}>
+                    <button
+                        onClick={() =>
+                            step === 0 ? onExitToChat() : setStep(step - 1)
+                        }
+                        style={headerBack}
+                    >
+                        ‹
+                    </button>
+                    <div style={{ display: "grid", gap: 2 }}>
+                        <div
+                            style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 8,
+                                ...nudgeDown,
+                            }}
+                        >
+                            <div style={avatar}>
+                                {payee
+                                    .split(" ")
+                                    .map((s) => s[0])
+                                    .join("")
+                                    .slice(0, 2)}
+                            </div>
+                            <div style={{ fontWeight: 800 }}>{payee}</div>
+                            <div style={verifiedTick}>✓</div>
+                        </div>
+                        {step >= 1 && (
+                            <div
+                                style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 6,
+                                    fontSize: 13,
+                                    ...nudgeDown,
+                                }}
+                            >
+                                <div style={upiDot} />
+                                {vpa}
+                            </div>
+                        )}
+                    </div>
+                    <div />
+                </div>
+            )}
+
+            {/* STEP 0 — Provider selection */}
+            {step === 0 && (
+                <div style={fsBodyNoScroll}>
+                    <div
+                        style={{
+                            fontWeight: 900,
+                            fontSize: 22,
+                            textAlign: "center",
+                            ...nudgeDown,
+                        }}
+                    >
+                        UPI Payment
+                    </div>
+                    <div
+                        style={{ fontWeight: 800, marginTop: 16, ...nudgeDown }}
+                    >
+                        Payment providers
+                    </div>
+                    <ProviderLogos selected={provider} onSelect={() => {}} />
+                    <motion.button
+                        ref={continueBtnRef}
+                        onClick={() => setStep(1)} // ⬅️ jump straight to PIN
+                        style={providerContinueBtn}
+                        animate={{ scale: [1, 1.05, 1] }}
+                        transition={{ repeat: Infinity, duration: 1.1 }}
+                    >
+                        Continue
+                    </motion.button>
+                    <div
+                        style={{ fontWeight: 800, marginTop: 16, ...nudgeDown }}
+                    >
+                        Enter UPI ID
+                    </div>
+                    <input
+                        defaultValue={vpa}
+                        inputMode="email"
+                        placeholder="username@bank"
+                        style={vpaField}
+                    />
+                </div>
+            )}
+
+            {/* STEP 1 — PIN entry */}
+            {step === 1 && (
+                <div style={fsBodyNoScroll}>
+                    <div style={{ fontSize: 12, marginTop: 4, ...nudgeDown }}>
+                        To: <strong>{payee}</strong> • ₹
+                        {amount.toLocaleString("en-IN")}
+                    </div>
+                    <PinWithKeypad
+                        onSuccess={() => setStep(2)}
+                        dotsRef={pinDotsRef}
+                    />
+                    <div style={brandRow}>
+                        paytm · <span style={{ opacity: 0.8 }}>powered by</span>{" "}
+                        UPI
+                    </div>
+                </div>
+            )}
+
+            {/* STEP 2 — Success */}
+            {step === 2 && (
+                <div style={{ ...fsBodyNoScroll, paddingTop: 12 }}>
+                    <div style={paytmHeader}>
+                        <button aria-label="Back" style={paytmHeaderIcon}>
+                            ‹
+                        </button>
+                        <img
+                            alt="paytm"
+                            src={LOGO_PAYTM}
+                            style={{ height: 20, objectFit: "contain" }}
+                        />
+                        <button aria-label="Share" style={paytmHeaderIcon}>
+                            ⤴︎
+                        </button>
+                    </div>
+
+                    {/* Existing Paytm success card (unchanged) */}
+                    <div style={successCardPaytm}>
+                        <div
+                            style={{
+                                display: "grid",
+                                gridTemplateColumns: "auto 1fr auto",
+                                gap: 12,
+                                alignItems: "center",
+                            }}
+                        >
+                            <div style={avatarSoft}>
+                                {payee
+                                    .split(" ")
+                                    .map((s) => s[0])
+                                    .join("")
+                                    .slice(0, 2)}
+                            </div>
+                            <div>
+                                <div style={{ fontWeight: 900, fontSize: 16 }}>
+                                    {payee}
+                                </div>
+                                <div style={{ fontSize: 13, opacity: 0.8 }}>
+                                    Sample Bank – 4581
+                                </div>
+                            </div>
+                            <div style={okTickBadge}>✓</div>
+                        </div>
+
+                        <div
+                            style={{
+                                fontSize: 40,
+                                fontWeight: 900,
+                                marginTop: 14,
+                            }}
+                        >
+                            ₹{amount.toLocaleString("en-IN")}
+                        </div>
+                        <div
+                            style={{
+                                fontSize: 12,
+                                letterSpacing: 1,
+                                fontWeight: 800,
+                                marginTop: 2,
+                            }}
+                        >
+                            PAYMENT SUCCESSFUL
+                        </div>
+                        <div
+                            style={{
+                                fontSize: 13,
+                                opacity: 0.75,
+                                marginTop: 4,
+                            }}
+                        >
+                            Today,&nbsp;
+                            {new Date().toLocaleTimeString([], {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                            })}
+                        </div>
+                    </div>
+
+                    {/* ⬇️ Final transcript below the card. Auto-plays and on end → onDone() */}
+                    <FinalTranscript
+                        audioSrc={SUCCESS_TRANSCRIPT_AUDIO}
+                        lines={finalTranscriptLines}
+                        onDone={onDone}
+                    />
+
+                    {/* ❌ No Done button here */}
+                </div>
+            )}
+
+            {/* Overlays */}
+            <CtaNudgeOverlay
+                visible={showContinueNudge}
+                targetRef={continueBtnRef as any}
+                message={NUDGE_CONTINUE}
+                onClose={() => setShowContinueNudge(false)}
+                blockClicks={false}
+            />
+            <CtaNudgeOverlay
+                visible={showPinNudge}
+                targetRef={pinDotsRef as any}
+                message={NUDGE_UPI_PIN}
+                onClose={() => setShowPinNudge(false)}
+                blockClicks={false}
+            />
+        </div>
+    )
+}
+
+/* ---- PIN dots + keypad ---- */
+function PinWithKeypad({
+    onSuccess,
+    dotsRef,
+}: {
+    onSuccess: () => void
+    dotsRef?: React.RefObject<HTMLDivElement>
+}) {
+    const [pin, setPin] = useState<string>("")
+    const add = (n: number) => setPin((p) => (p.length < 4 ? p + String(n) : p))
+    const back = () => setPin((p) => p.slice(0, -1))
+    const submit = () => {
+        if (pin.length === 4) setTimeout(onSuccess, 900)
+    }
+    return (
+        <>
+            <div
+                style={{
+                    fontWeight: 800,
+                    marginTop: 24,
+                    marginBottom: 8,
+                    ...nudgeDown,
+                }}
+            >
+                ENTER 4-DIGIT UPI PIN
+            </div>
+            <motion.div
+                ref={dotsRef as any}
+                style={{
+                    display: "flex",
+                    justifyContent: "center",
+                    gap: 12,
+                    marginBottom: 8,
+                }}
+                animate={{ scale: [1, 1.05, 1] }}
+                transition={{ repeat: Infinity, duration: 1.1 }}
+            >
+                {[0, 1, 2, 3].map((i) => (
+                    <div
+                        key={i}
+                        style={{
+                            width: 16,
+                            height: 16,
+                            borderRadius: 8,
+                            background: i < pin.length ? "#111" : "transparent",
+                            border: "2px solid #111",
+                        }}
+                    />
+                ))}
+            </motion.div>
+            <NumericKeypad
+                onKey={add}
+                onBackspace={back}
+                onSubmit={submit}
+                enabledSubmit={pin.length === 4}
+            />
+        </>
+    )
+}
+
+/* Selectable + highlighted provider logos */
+function ProviderLogos({
+    selected,
+    onSelect,
+}: {
+    selected?: "PhonePe" | "Google Pay" | "Paytm" | "BHIM UPI"
+    onSelect?: (p: "PhonePe" | "Google Pay" | "Paytm" | "BHIM UPI") => void
+}) {
+    const providers = [
+        { name: "PhonePe", src: LOGO_PHONEPE },
+        { name: "Google Pay", src: LOGO_GPAY },
+        { name: "Paytm", src: LOGO_PAYTM },
+        { name: "BHIM UPI", src: LOGO_BHIM },
+    ] as const
+
+    const baseBox: React.CSSProperties = {
+        height: 56,
+        minWidth: 96,
+        background: "#fff",
+        borderRadius: 14,
+        display: "grid",
+        placeItems: "center",
+        padding: "8px 12px",
+        border: "1px solid rgba(0,0,0,0.08)",
+        boxShadow: "0 1px 2px rgba(0,0,0,0.06)",
+        cursor: "default",
+        position: "relative",
+        transition: "box-shadow .2s, border-color .2s, background .2s",
+    }
+    const imgStyle: React.CSSProperties = {
+        height: 28,
+        maxWidth: 120,
+        objectFit: "contain",
+    }
+
+    return (
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+            {providers.map((p) => {
+                const active = p.name === selected
+                return (
+                    <div
+                        key={p.name}
+                        title={p.name}
+                        onClick={() => onSelect?.(p.name)}
+                        style={{
+                            ...baseBox,
+                            ...(active
+                                ? {
+                                      border: "2px solid #1677FF",
+                                      boxShadow:
+                                          "0 8px 20px rgba(22,119,255,.20)",
+                                      background: "rgba(22,119,255,0.06)",
+                                  }
+                                : null),
+                        }}
+                    >
+                        {active && (
+                            <div
+                                aria-hidden
+                                style={{
+                                    position: "absolute",
+                                    top: 6,
+                                    right: 6,
+                                    width: 18,
+                                    height: 18,
+                                    borderRadius: 12,
+                                    background: "#16a34a",
+                                    color: "#fff",
+                                    display: "grid",
+                                    placeItems: "center",
+                                    fontSize: 12,
+                                    fontWeight: 900,
+                                }}
+                            >
+                                ✓
+                            </div>
+                        )}
+                        <img
+                            style={imgStyle}
+                            alt={p.name}
+                            src={encodeURI(p.src)}
+                            onError={(e) => {
+                                ;(
+                                    e.currentTarget as HTMLImageElement
+                                ).style.opacity = "0.25"
+                            }}
+                        />
+                    </div>
+                )
+            })}
+        </div>
+    )
+}
+
+/* ========= PhoneScaler (COVER + top-anchored, no stretch) ========= */
+/* ========= PhoneScaler (COVER + top-anchored, no stretch) ========= */
+function PhoneScaler({
+    width = 390,
+    height = 844,
+    children,
+}: {
+    width?: number
+    height?: number
+    children: React.ReactNode
+}) {
+    const [scale, setScale] = React.useState(1)
+
+    const recompute = React.useCallback(() => {
+        const vv = (window as any).visualViewport as VisualViewport | undefined
+        const vw = vv?.width ?? window.innerWidth
+        const vh = vv?.height ?? window.innerHeight
+        // COVER (fill both axes) + no-downscale: never go below 1x
+        const s = Math.max(1, Math.max(vw / width, vh / height))
+        setScale(s)
+    }, [width, height])
+
+    React.useEffect(() => {
+        // lock page + ensure viewport-fit=cover once
+        const html = document.documentElement
+        const body = document.body
+        const prev = {
+            htmlBg: html.style.background,
+            bodyBg: body.style.background,
+            bodyM: body.style.margin,
+            bodyOverflow: body.style.overflow,
+        }
+        html.style.background = "#FFFFFF"
+        body.style.background = "#FFFFFF"
+        body.style.margin = "0"
+        body.style.overflow = "hidden"
+
+        let meta = document.querySelector(
+            'meta[name="viewport"]'
+        ) as HTMLMetaElement | null
+        if (!meta) {
+            meta = document.createElement("meta")
+            meta.name = "viewport"
+            document.head.appendChild(meta)
+        }
+        const content =
+            meta.getAttribute("content") ||
+            "width=device-width, initial-scale=1"
+        if (!/viewport-fit=cover/.test(content)) {
+            meta.setAttribute("content", content + ", viewport-fit=cover")
+        }
+
+        recompute()
+        const onResize = () => recompute()
+        window.addEventListener("resize", onResize, { passive: true })
+        window.addEventListener("orientationchange", onResize, {
+            passive: true,
+        })
+        const vv = (window as any).visualViewport as VisualViewport | undefined
+        if (vv) vv.addEventListener("resize", onResize, { passive: true })
+
+        return () => {
+            html.style.background = prev.htmlBg
+            body.style.background = prev.bodyBg
+            body.style.margin = prev.bodyM
+            body.style.overflow = prev.bodyOverflow
+            window.removeEventListener("resize", onResize)
+            window.removeEventListener("orientationchange", onResize)
+            if (vv) vv.removeEventListener("resize", onResize)
+        }
+    }, [recompute])
+
+    return (
+        <div
+            style={{
+                position: "fixed",
+                inset: 0,
+                background: "#FFFFFF",
+                overflow: "hidden", // cover behavior (crop bottom/right if needed)
+            }}
+        >
+            <div
+                style={{
+                    position: "absolute",
+                    top: 0, // anchor to TOP edge
+                    left: "50%",
+                    width,
+                    height,
+                    transform: `translateX(-50%) scale(${scale})`,
+                    transformOrigin: "top center", // keep top edge pinned
+                    willChange: "transform",
+                }}
+            >
+                {children}
+            </div>
+        </div>
+    )
+}
+
+/* ========= WhatsApp-style Poll (replaces CSATPoll) ========= */
+function WhatsAppPoll({
+    title = "How satisfied are you?",
+    options = [1, 2, 3, 4, 5],
+    onVote,
+}: {
+    title?: string
+    options?: (string | number)[]
+    onVote: (value: number) => void
+}) {
+    const [picked, setPicked] = React.useState<number | null>(null)
+
+    const wrap: React.CSSProperties = {
+        display: "grid",
+        gap: 10,
+        minWidth: 220,
+    }
+    const head: React.CSSProperties = {
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        fontWeight: 800,
+        fontSize: 14,
+    }
+    const pill: React.CSSProperties = {
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        padding: "10px 12px",
+        borderRadius: 12,
+        background: "#FFFFFF",
+        border: "1px solid rgba(0,0,0,0.08)",
+        boxShadow: "0 1px 2px rgba(0,0,0,0.06)",
+        cursor: "pointer",
+        fontWeight: 700,
+        textAlign: "left",
+    }
+    const radio: React.CSSProperties = {
+        width: 16,
+        height: 16,
+        borderRadius: 999,
+        border: "2px solid rgba(0,0,0,0.6)",
+        display: "grid",
+        placeItems: "center",
+        flexShrink: 0,
+    }
+    const dot: React.CSSProperties = {
+        width: 8,
+        height: 8,
+        borderRadius: 999,
+        background: "#1677FF",
+    }
+
+    return (
+        <div style={wrap}>
+            <div style={head}>
+                <span aria-hidden>🗳️</span>
+                <span>Poll</span>
+            </div>
+            <div style={{ fontWeight: 800 }}>{title}</div>
+
+            <div style={{ display: "grid", gap: 8 }}>
+                {options.map((o) => {
+                    const val = Number(o)
+                    const active = picked === val
+                    return (
+                        <button
+                            key={String(o)}
+                            style={{
+                                ...pill,
+                                ...(active
+                                    ? {
+                                          border: "2px solid #1677FF",
+                                          boxShadow: "0 0 0 0 rgba(0,0,0,0)",
+                                      }
+                                    : null),
+                            }}
+                            disabled={picked !== null}
+                            onClick={() => {
+                                setPicked(val)
+                                onVote(val)
+                            }}
+                            aria-pressed={active}
+                        >
+                            <span style={radio}>
+                                {active ? <span style={dot} /> : null}
+                            </span>
+                            {String(o)}
+                        </button>
+                    )
+                })}
+            </div>
+
+            {picked !== null && (
+                <div style={{ fontSize: 12, opacity: 0.7 }}>
+                    Thanks for voting!
+                </div>
+            )}
+        </div>
+    )
+}
+
+/* ========= Resolved Badge (pulsing green) ========= */
+function ResolvedBadge({
+    label = "Ticket resolved",
+    size = 110,
+}: {
+    label?: string
+    size?: number
+}) {
+    // inject keyframes once
+    React.useEffect(() => {
+        const id = "resolved-badge-css"
+        if (document.getElementById(id)) return
+        const style = document.createElement("style")
+        style.id = id
+        style.textContent = `
+      @keyframes resolvedPulse {
+        0%   { transform: scale(1);     opacity: 0.85; }
+        60%  { transform: scale(1.08);  opacity: 1;    }
+        100% { transform: scale(1);     opacity: 0.85; }
+      }
+    `
+        document.head.appendChild(style)
+    }, [])
+
+    const ring = Math.max(6, Math.floor(size * 0.06))
+    const icon = Math.floor(size * 0.42)
+
+    return (
+        <div
+            style={{
+                margin: "8px 0 18px",
+                display: "grid",
+                placeItems: "center",
+            }}
+        >
+            <div
+                style={{
+                    width: size,
+                    height: size,
+                    borderRadius: 9999,
+                    background: "#22c55e",
+                    display: "grid",
+                    placeItems: "center",
+                    boxShadow:
+                        "0 8px 20px rgba(34,197,94,0.35), inset 0 0 0 " +
+                        ring +
+                        "px rgba(255,255,255,0.15)",
+                    animation: "resolvedPulse 1.6s ease-in-out infinite",
+                }}
+                aria-hidden
+            >
+                {/* White check */}
+                <svg
+                    width={icon}
+                    height={icon}
+                    viewBox="0 0 24 24"
+                    preserveAspectRatio="xMidYMid meet"
+                    fill="none"
+                    stroke="#FFFFFF"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    role="img"
+                    aria-label="Resolved"
+                >
+                    <path d="M20 6L9 17l-5-5" />
+                </svg>
+            </div>
+            <div
+                style={{
+                    marginTop: 12,
+                    fontSize: 16,
+                    fontWeight: 600,
+                    color: "#0a0a0a",
+                }}
+            >
+                {label}
+            </div>
+        </div>
+    )
+}
+
+/* ========= Handoff ========= */
+function HandoffScreen() {
+    return (
+        <motion.div
+            key="handoff"
+            style={{
+                position: "absolute",
+                inset: 0,
+                background: "#FFFFFF",
+                display: "grid",
+                placeItems: "center",
+                padding: 24,
+            }}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+        >
+            <div style={{ textAlign: "center", maxWidth: 420 }}>
+                {/* ✅ New badge above existing text */}
+                <ResolvedBadge />
+
+                <div
+                    style={{ fontSize: 22, fontWeight: 900, marginBottom: 10 }}
+                >
+                    If you loved the demo
+                </div>
+                <div style={{ opacity: 0.85, marginBottom: 20 }}>
+                    Talk to us and see how we can help you.
+                </div>
+                <button
+                    style={{
+                        padding: "14px 20px",
+                        borderRadius: 14,
+                        border: 0,
+                        background: "#1677FF",
+                        color: "#fff",
+                        fontWeight: 900,
+                        fontSize: 16,
+                        cursor: "pointer",
+                        boxShadow: "0 12px 28px rgba(22,119,255,.22)",
+                    }}
+                    onClick={() =>
+                        window.open(
+                            "https://www.nugget.com/get-in-touch?utm_source=gff&utm_medium=nfc_card&utm_campaign=gff",
+                            "_blank"
+                        )
+                    }
+                >
+                    Talk to us
+                </button>
+            </div>
+        </motion.div>
+    )
+}
+
+/* ========= On-call status bar (reused everywhere) ========= */
+function CallStatusBar({ time }: { time: number }) {
+    return (
+        <div
+            style={{
+                position: "fixed",
+                top: 0,
+                left: 0,
+                right: 0,
+                height: ONCALL_H,
+                background: "#25D366",
+                color: "#fff",
+                display: "grid",
+                alignItems: "center",
+                zIndex: 10000,
+            }}
+            aria-label="On-call status bar"
+        >
+            <div
+                style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr auto",
+                    alignItems: "center",
+                    padding: "0 12px",
+                    fontWeight: 800,
+                    fontSize: fs(10),
+                    letterSpacing: 0.2,
+                }}
+            >
+                <span>On call</span>
+                <span>{formatClock(time)}</span>
+            </div>
+        </div>
+    )
+}
+
+/* ========= Component ========= */
+type Props = { mobileWidth?: number; mobileHeight?: number; uploadImg?: string }
+
+export default function Upigff({
+    mobileWidth = 390,
+    mobileHeight = 844,
+    uploadImg,
+}: Props) {
+    // 🚫 Landing removed: start directly in "incoming"
+    const [phase, setPhase] = useState<Phase>("incoming")
+
+    const UPLOAD_IMG_SRC =
+        uploadImg ||
+        "https://res.cloudinary.com/dyko2numc/image/upload/v1759479172/Paytm_SC_-_GFF_yzucha.jpg"
+
+    /* Preload logos + uploaded image */
+    useEffect(() => {
+        ;[
+            UPLOAD_IMG_SRC,
+            LOGO_PHONEPE,
+            LOGO_GPAY,
+            LOGO_PAYTM,
+            LOGO_BHIM,
+        ].forEach((u) => {
+            const i = new Image()
+            i.src = encodeURI(u)
+        })
+    }, [UPLOAD_IMG_SRC])
+
+    /* Audio refs */
+    const notifRef = useRef<HTMLAudioElement | null>(null)
+    const ringtoneRef = useRef<HTMLAudioElement | null>(null)
+    const botVoiceRef = useRef<HTMLAudioElement | null>(null)
+    // WhatsApp bot cue audios
+    const waBot1Ref = useRef<HTMLAudioElement | null>(null) // after details confirmed
+    const waBot2Ref = useRef<HTMLAudioElement | null>(null) // when Pay Now appears
+
+    useEffect(() => {
+        waBot1Ref.current = new Audio(
+            "https://res.cloudinary.com/dyko2numc/video/upload/v1759735764/Bot_Whatsapp_1_xuwchp.mp3"
+        )
+        waBot1Ref.current.preload = "auto"
+        waBot1Ref.current.playsInline = true as any
+
+        waBot2Ref.current = new Audio(
+            "https://res.cloudinary.com/dyko2numc/video/upload/v1759735773/Bot_Whatsapp_2_o1ascn.mp3"
+        )
+        waBot2Ref.current.preload = "auto"
+        waBot2Ref.current.playsInline = true as any
+    }, [])
+
+    useEffect(() => {
+        notifRef.current = new Audio(NOTIF_SRC)
+        notifRef.current.preload = "auto"
+
+        ringtoneRef.current = new Audio(RINGTONE_SRC)
+        ringtoneRef.current.preload = "auto"
+        if (ringtoneRef.current) {
+            ringtoneRef.current.loop = true
+            ringtoneRef.current.volume = 0.65
+        }
+
+        botVoiceRef.current = new Audio(BOT_VOICE_SRC)
+        botVoiceRef.current.preload = "auto"
+    }, [])
+
+    const pingStampRef = useRef<Record<string, number>>({})
+    const pingNotifOnce = (key: string, cooldownMs = 1500) => {
+        const now = Date.now(),
+            last = pingStampRef.current[key] ?? 0
+        if (now - last < cooldownMs) return
+        pingStampRef.current[key] = now
+        const a = notifRef.current
+        if (!SOUND_ENABLED || !a) return
+        try {
+            a.pause()
+            a.currentTime = 0
+            a.play().catch(() => {})
+        } catch {}
+    }
+
+    // 🔊 Gate ringtone behind user consent (OK)
+    const [volumeAllowed, setVolumeAllowed] = useState(false)
+
+    /* Ringtone play/stop controlled by phase + consent */
+    useEffect(() => {
+        const a = ringtoneRef.current
+        if (!a) return
+        if (SOUND_ENABLED && phase === "incoming" && volumeAllowed) {
+            a.play().catch(() => {})
+        } else {
+            try {
+                a.pause()
+                a.currentTime = 0
+            } catch {}
+        }
+        return () => {
+            try {
+                a?.pause()
+            } catch {}
+        }
+    }, [phase, volumeAllowed])
+
+    const [incomingOverlay, setIncomingOverlay] = useState(false)
+
+    // Transcript lines (for in-call preview text)
+    const callLines: TranscriptLine[] = [
+        {
+            t: 0,
+            text: "Bot: Hello Sir, Mai ABC Credit card sei Ria baat kar rhi hun. Aapne kal credit card ki payment try kari thi but wo fail ho gayi hai. Kya abhi baat karne ke liye sahi time hai?",
+        },
+        {
+            t: 12,
+            text: "User: Haan yar, bada kharab system hai tumhara. Mere paise kat gye aur amount paid bhi nhi dikha rha hai",
+        },
+        {
+            t: 18,
+            text: `Bot: Sir mai maffi chahti hun ki aapko ye face karna pada. Aapka refund 24-48 hours me aajagea, but aap mujhe payment screenshot bhi dedo, mei expedite karva deti hun`,
+        },
+        { t: 30, text: "User: Theek hai, kaha bhejni hai?" },
+        {
+            t: 35,
+            text: "Bot: Sir aap 2 min dijiye mai aapse whatsapp par photo collect karlungi. Aap waha payment proof upload kar sakte hai.",
+        },
+        { t: 42, text: "User: Theek hai." },
+        {
+            t: 45,
+            text: "Bot: But before that sir, kyuki aapki payment ki aaj last date hai, aap abhi wapas payment kardijiye warna due amount pei interest aur fine lag jaega",
+        },
+        {
+            t: 52,
+            text: "User: Ye kaisi batameezi hai. Mera purana amount refund nhi kara aur mujhse wapas paise maang rhe ho?",
+        },
+        {
+            t: 58,
+            text: "Bot: Mai maafi chahti hun sir, mai aapka refund laane mei puri sahayta karungi, but aaj last date hone ki wajah sei, payment na karne pei aapko 2000 ka fine lag jaega ",
+        },
+        { t: 67, text: "User: Accha theek hai, batao kaise karni hai payment" },
+        {
+            t: 70,
+            text: "Bot: Sir kya aap upi se payment karna chahenge, I can help you with that ?",
+        },
+        { t: 75, text: "User: Haan, UPI sei hi karni hai" },
+        {
+            t: 78,
+            text: "Bot: Theek hai sir mai whatsapp pei aapko ek message drop kar rahi hun aap please aapna whatsapp khol lijiye",
+        },
+    ]
+    // BEFORE
+
+    const callEndAt =
+        (callLines.length ? callLines[callLines.length - 1].t : 0) + 1.2
+
+    const [callTime, setCallTime] = useState(0)
+    // MOVE THIS BLOCK ABOVE the useEffect that references simIncall
+    const [simIncall, setSimIncall] = useState(false)
+    const simStartRef = useRef<number | null>(null)
+    const rafRef = useRef<number | null>(null)
+    const stopIncallRAF = () => {
+        if (rafRef.current != null) {
+            cancelAnimationFrame(rafRef.current)
+            rafRef.current = null
+        }
+    }
+    const stopIncallSim = () => {
+        setSimIncall(false)
+        simStartRef.current = null
+        stopIncallRAF()
+    }
+    const startIncallSim = React.useCallback(() => {
+        setSimIncall(true)
+        simStartRef.current = performance.now()
+        const tick = () => {
+            if (!simStartRef.current) return
+            const elapsed = (performance.now() - simStartRef.current) / 1000
+            const clamped = Math.min(elapsed, callEndAt)
+            setCallTime(clamped)
+            if (clamped >= callEndAt - 0.001) {
+                stopIncallRAF()
+                stopIncallSim()
+                return
+            }
+            rafRef.current = requestAnimationFrame(tick)
+        }
+        rafRef.current = requestAnimationFrame(tick)
+    }, [callEndAt])
+
+    useEffect(() => {
+        if (phase !== "incall") return
+        const bot = botVoiceRef.current
+        if (!bot) return
+        const onTime = () => {
+            if (!simIncall) setCallTime(Math.min(bot.currentTime, callEndAt))
+        }
+        bot.addEventListener("timeupdate", onTime)
+        setCallTime(0)
+        return () => {
+            bot.removeEventListener("timeupdate", onTime)
+        }
+    }, [phase, callEndAt, simIncall])
+    useEffect(() => {
+        if (phase !== "incall") return
+
+        // when the in-call timeline reaches scripted end (real audio or simulation)
+        if (callTime >= callEndAt - 0.001 && !incallHunShownRef.current) {
+            incallHunShownRef.current = true
+
+            // optional ping sound (you already have this helper)
+            pingNotifOnce("hun_incall")
+
+            // show the WhatsApp banner and its spotlight nudge
+            setShowHUN(true)
+            setArmHun(true)
+
+            // auto-hide banner after a bit (optional)
+        }
+    }, [phase, callTime, callEndAt])
+
+    const callIdx = useMemo(() => {
+        let i = 0
+        for (let k = 0; k < callLines.length; k++)
+            if (callLines[k].t <= callTime) i = k
+        return i
+    }, [callLines, callTime])
+    const callBefore = callLines[callIdx - 1]?.text ?? ""
+    const callNow = callLines[callIdx]?.text ?? ""
+    const callAfter = callLines[callIdx + 1]?.text ?? ""
+    // PATCH: in-call transcript simulation when audio can't autoplay
+
+    // ===== Persistent Call Bar State =====
+    const [showCallBar, setShowCallBar] = useState(false)
+    const [callStartAt, setCallStartAt] = useState<number | null>(null)
+    const [callElapsed, setCallElapsed] = useState(0)
+
+    useEffect(() => {
+        if (!showCallBar || !callStartAt) return
+        const id = setInterval(() => {
+            setCallElapsed(Math.floor((Date.now() - callStartAt) / 1000))
+        }, 1000)
+        return () => clearInterval(id)
+    }, [showCallBar, callStartAt])
+
+    // Show the call bar in incoming + incall
+    useEffect(() => {
+        setShowCallBar(phase != "handoff")
+    }, [phase])
+
+    // HUN + banner
+    const [showHUN, setShowHUN] = useState(false)
+    const [showIncallNudge, setShowIncallNudge] = useState(false)
+    const hunButtonRef = useRef<HTMLButtonElement | null>(null)
+    const incallHunShownRef = useRef(false)
+
+    // HUN controls — hide only on tap
+    const HUN_TIMEOUT_MS_DEFAULT = 0 // 0 = never auto-hide
+    const hunTimerRef = React.useRef<number | null>(null)
+    const hunShownRef = React.useRef(false)
+
+    function hideHun() {
+        if (hunTimerRef.current) {
+            clearTimeout(hunTimerRef.current)
+            hunTimerRef.current = null
+        }
+        setShowHUN(false)
+    }
+
+    function showHun({
+        timeoutMs = HUN_TIMEOUT_MS_DEFAULT,
+        withNudge = true,
+    } = {}) {
+        // turn off competing spotlights
+        setShowPayNowOverlay(false)
+        setShowIncallNudge(false)
+
+        setShowHUN(true)
+        if (withNudge) setArmHun(true)
+
+        // no auto-hide when timeoutMs === 0
+        if (hunTimerRef.current) clearTimeout(hunTimerRef.current)
+        if (timeoutMs > 0) {
+            hunTimerRef.current = window.setTimeout(() => {
+                hunTimerRef.current = null
+                setShowHUN(false)
+            }, timeoutMs)
+        }
+    }
+
+    function showHunOnce() {
+        if (hunShownRef.current) return
+        hunShownRef.current = true
+        setShowHUN(true)
+        setArmHun(true)
+        // if any other spotlights could collide, hide them:
+        setShowPayNowOverlay(false)
+    }
+
+    // ⬇️ removed unused top-level continueBtnRef (there’s a scoped one inside UPIStepper)
+    const [armHun, setArmHun] = useState(false)
+
+    // ⬆️⟵⟵ Moved these ABOVE the pointer-events toggler to avoid TDZ
+    const [showStartVolumeModal, setShowStartVolumeModal] = useState(false)
+    const [showPayNowOverlay, setShowPayNowOverlay] = useState(false)
+
+    // Enable pointer events on the absolute top-layer only while overlays are active
+    useEffect(() => {
+        const host = document.getElementById(TOP_LAYER_ID)
+        if (!host) return
+        const modalsActive = showStartVolumeModal || incomingOverlay
+        host.style.pointerEvents = modalsActive ? "auto" : "none"
+        return () => {
+            host.style.pointerEvents = "none"
+        }
+    }, [showStartVolumeModal, incomingOverlay])
+
+    useEffect(() => {}, [phase])
+
+    useArmableNudge({
+        armed: armHun,
+        onDisarm: () => setArmHun(false),
+        targetRef: hunButtonRef as any,
+        setVisible: setShowIncallNudge,
+    })
+
+    // Volume banner on call start (incall)
+
+    const [messages, setMessages] = useState<Msg[]>([])
+    const seededRef = useRef(false)
+    const chatFeedRef = useRef<HTMLDivElement | null>(null)
+
+    const scrollToBottom = () => {
+        const el = chatFeedRef.current
+        if (!el) return
+        el.scrollTop = Math.max(0, el.scrollHeight - BOTTOM_OFFSET)
+    }
+    useLayoutEffect(scrollToBottom, [phase])
+    useLayoutEffect(scrollToBottom, [messages])
+
+    useEffect(() => {
+        if (phase !== "chat" || seededRef.current) return
+        seededRef.current = true
+        setMessages([
+            {
+                id: "c1",
+                from: "bot",
+                text: "Hello Sir, Aap apni payment screenshot yaha upload kardijiye.",
+                meta: { time: "11:59" },
+            },
+        ])
+        setShowIncallNudge(false)
+        setShowHUN(false)
+        setTimeout(simulateUploadAndUPIFlow, 350)
+    }, [phase])
+
+    const mkTimeNow = () => {
+        const d = new Date()
+        const hh = d.getHours().toString().padStart(2, "0")
+        const mm = d.getMinutes().toString().padStart(2, "0")
+        return `${hh}:${mm}`
+    }
+    const post = (msg: Msg, delay: number) =>
+        setTimeout(() => setMessages((p) => p.concat(msg)), delay)
+
+    // Pay Now refs / nudge (WA)
+    const payNowBtnRef = React.useRef<HTMLButtonElement | null>(null)
+    // ⛔️ NOTE: showPayNowOverlay defined earlier (moved up)
+
+    useArmableNudge({
+        armed: false, // default; will arm later
+        onDisarm: () => {}, // set below when arming
+        targetRef: payNowBtnRef as any,
+        setVisible: setShowPayNowOverlay,
+        scrollParentRef: chatFeedRef,
+    })
+
+    const simulateUploadAndUPIFlow = () => {
+        const now = mkTimeNow()
+
+        setTimeout(() => {
+            setMessages((p) =>
+                p.concat({
+                    id: `u-img-${Date.now()}`,
+                    from: "user",
+                    text: (
+                        <img
+                            src={encodeURI(UPLOAD_IMG_SRC)}
+                            alt="Payment screenshot (paid)"
+                            style={{
+                                width: 200,
+                                height: "auto",
+                                borderRadius: 10,
+                                display: "block",
+                                objectFit: "cover",
+                                border: "1px solid rgba(0,0,0,0.08)",
+                                boxShadow: "0 1px 2px rgba(0,0,0,0.06)",
+                            }}
+                        />
+                    ),
+                    meta: { time: now, status: "read" },
+                })
+            )
+        }, 350)
+
+        post(
+            {
+                id: "b-confirm-details",
+                from: "bot",
+                text: (
+                    <span>
+                        Aap apni payment ki details confim kar dijiye:
+                        <br />
+                        Date - 6th October 2025
+                        <br />
+                        Time - 5:22 PM
+                        <br />
+                        Amount - 40,000
+                        <br />
+                        Bank Name - State bank of India
+                        <br />
+                        Ref ID - 021469541521
+                    </span>
+                ),
+                meta: { time: mkTimeNow() },
+            },
+            GAP * 1.0
+        )
+
+        post(
+            {
+                id: "u-ok",
+                from: "user",
+                text: "Haan sahi hai",
+                meta: { time: mkTimeNow(), status: "read" },
+            },
+            GAP * 2.0
+        )
+
+        setTimeout(
+            () => {
+                playSafe(waBot2Ref.current, { allow: volumeAllowed })
+            },
+            GAP * 5.2 + 50
+        )
+
+        post(
+            {
+                id: "b-ack",
+                from: "bot",
+                text: (
+                    <span>
+                        Thank you fo confirming sir, i'll make sure this is
+                        expedited. Aap iss link sei status track kar sakte hai -{" "}
+                        <a
+                            href="https://www.ABC_creditcard.com/refund_status"
+                            style={{
+                                color: wa.linkBlue,
+                                textDecoration: "none",
+                                fontWeight: 700,
+                            }}
+                            target="_blank"
+                            rel="noreferrer"
+                        >
+                            www.ABC_creditcard.com/refund_status
+                        </a>
+                    </span>
+                ),
+                meta: { time: mkTimeNow() },
+            },
+            GAP * 2.8
+        )
+
+        post(
+            {
+                id: "b-due",
+                from: "bot",
+                text: `Also aapka credit card ka ₹${DUE_AMOUNT.toLocaleString("en-IN")} amount due hai. Payment ke liye aage bad sakte hai?`,
+                meta: { time: mkTimeNow() },
+            },
+            GAP * 3.8
+        )
+
+        post(
+            {
+                id: "u-yes",
+                from: "user",
+                text: "Yes",
+                meta: { time: mkTimeNow(), status: "read" },
+            },
+            GAP * 4.4
+        )
+
+        // UPI link + Pay Now CTA
+        post(
+            {
+                id: "b-upi-link",
+                from: "bot",
+                text: "UPI form link",
+                ctas: [
+                    {
+                        label: "Pay Now",
+                        refHook: payNowBtnRef,
+                        onClick: () => {
+                            setMessages((p) =>
+                                p.concat({
+                                    id: `b-upi-opening-${Date.now()}`,
+                                    from: "bot",
+                                    text: "Opening secure UPI gateway…",
+                                    meta: { time: mkTimeNow() },
+                                })
+                            )
+                            setPhase("gateway")
+                        },
+                    },
+                ],
+                meta: { time: mkTimeNow() },
+            },
+            GAP * 5.2
+        )
+
+        setTimeout(
+            () => {
+                // arm Pay Now spotlight now that the button exists
+                setShowPayNowOverlay(true)
+            },
+            GAP * 5.2 + 80
+        )
+    }
+    useEffect(() => {
+        if (phase === "incall") {
+            incallHunShownRef.current = false
+        }
+    }, [phase])
+
+    // Full-screen START-volume modal
+    // ⛔️ NOTE: showStartVolumeModal state was moved earlier (single source of truth)
+
+    // Auto-open the volume modal when entering incoming (since landing was removed)
+    useEffect(() => {
+        if (phase === "incoming") setShowStartVolumeModal(true)
+    }, [phase])
+
+    return (
+        <FullScreenPortal>
+            <PhoneScaler width={mobileWidth} height={mobileHeight}>
+                <div
+                    style={{
+                        width: "100%",
+                        height: "100%",
+                        position: "relative",
+                        background: "#FFFFFF",
+                        overflow: "hidden",
+                        paddingTop: showCallBar
+                            ? ONCALL_BAR_H + ONCALL_EXTRA
+                            : 0,
+
+                        paddingBottom: `calc(env(safe-area-inset-bottom) + ${showCallBar ? ONCALL_BOTTOM_PAD : 0}px)`,
+                        // ⬅️ offset below green On-call bar
+
+                        ["--oncall-bottom-pad" as any]: `${showCallBar ? ONCALL_BOTTOM_PAD : 0}px`,
+                    }}
+                >
+                    {/* GLOBAL on-call status bar — shows across incoming & incall */}
+                    {/* GLOBAL on-call status bar — hide during WA chat */}
+                    {showCallBar && <CallStatusBar time={callElapsed} />}
+
+                    {/* GLOBAL heads-up notification (visible in any phase) */}
+                    {/* GLOBAL heads-up notification (rendered in absolute top layer) */}
+                    <Portal>
+                        <HeadsUpNotification
+                            ref={hunButtonRef}
+                            visible={showHUN}
+                            title="Nugget (WhatsApp)"
+                            message="Payment completed. Tap to open chat."
+                            topOffset={0}
+                            onTap={() => {
+                                setShowHUN(false)
+                                setShowIncallNudge(false)
+                                setPhase("chat")
+                                const now = new Date().toLocaleTimeString([], {
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                })
+                                setMessages((pp) =>
+                                    pp.concat(
+                                        {
+                                            id: `b-upi-verified-${Date.now()}`,
+                                            from: "bot",
+                                            text: `Verified ✅ UPI payment of ₹${UPI_PAY_AMOUNT.toLocaleString("en-IN")} successful.`,
+                                            meta: { time: now },
+                                        },
+                                        {
+                                            id: `b-receipt-${Date.now()}`,
+                                            from: "bot",
+                                            text: (
+                                                <a
+                                                    href={MOCK_RECEIPT_PDF_URL}
+                                                    target="_blank"
+                                                    rel="noreferrer"
+                                                    style={{
+                                                        color: wa.linkBlue,
+                                                        textDecoration: "none",
+                                                        fontWeight: 700,
+                                                    }}
+                                                >
+                                                    📎 Payment_Receipt.pdf
+                                                </a>
+                                            ),
+                                            meta: { time: now },
+                                        },
+                                        {
+                                            id: `b-csat-${Date.now()}`,
+                                            from: "bot",
+                                            text: (
+                                                <WhatsAppPoll
+                                                    title="How satisfied are you with the assistance today?"
+                                                    options={[1, 2, 3, 4, 5]}
+                                                    onVote={async (value) => {
+                                                        logEvent(
+                                                            "csat_submit",
+                                                            { value }
+                                                        )
+                                                        setShowCallBar(false)
+                                                        await delay(4000)
+                                                        setPhase("handoff")
+                                                    }}
+                                                />
+                                            ),
+                                            meta: { time: now },
+                                        }
+                                    )
+                                )
+                            }}
+                            icon={
+                                <div
+                                    style={{
+                                        width: 28,
+                                        height: 28,
+                                        borderRadius: 8,
+                                        background: "#25D366",
+                                        display: "grid",
+                                        placeItems: "center",
+                                        color: "#fff",
+                                        fontWeight: 900,
+                                    }}
+                                >
+                                    n
+                                </div>
+                            }
+                        />
+                    </Portal>
+
+                    {/* Spotlight for HUN (optional nudge) */}
+                    <CtaNudgeOverlay
+                        visible={showIncallNudge}
+                        targetRef={hunButtonRef as any}
+                        message={NUDGE_HUN}
+                        onClose={() => setShowIncallNudge(false)}
+                    />
+
+                    <audio
+                        src={NOTIF_SRC}
+                        preload="auto"
+                        playsInline
+                        style={{ display: "none" }}
+                    />
+
+                    <AnimatePresence mode="wait">
+                        {/* Incoming (start state) */}
+                        {phase === "incoming" && (
+                            <motion.div
+                                key="incoming"
+                                style={dialerWrap}
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 1 }}
+                                exit={{ opacity: 0 }}
+                            >
+                                <div
+                                    style={{
+                                        textAlign: "center",
+                                        display: "grid",
+                                        gap: 14,
+                                        placeItems: "center",
+                                        paddingTop: 10,
+                                    }}
+                                >
+                                    <SquareNLogo size={96} />
+                                    <div
+                                        style={{
+                                            fontSize: 22,
+                                            fontWeight: 900,
+                                            letterSpacing: 0.2,
+                                            ...nudgeDown,
+                                        }}
+                                    >
+                                        Nugget AI Call Support
+                                    </div>
+                                    <div
+                                        style={{
+                                            fontSize: 14,
+                                            opacity: 0.65,
+                                            ...nudgeDown,
+                                        }}
+                                    >
+                                        Most recent call · Yesterday
+                                    </div>
+                                </div>
+
+                                <div
+                                    style={{
+                                        display: "flex",
+                                        gap: 48,
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                        marginBottom: 20,
+                                    }}
+                                >
+                                    <CallButton
+                                        type="answer"
+                                        label="Answer"
+                                        pulse
+                                        onClick={async () => {
+                                            setPhase("incall")
+                                            setShowCallBar(true)
+                                            setCallStartAt(Date.now())
+                                            setCallElapsed(0)
+
+                                            try {
+                                                ringtoneRef.current?.pause()
+                                                const r = ringtoneRef.current
+                                                if (
+                                                    r &&
+                                                    !Number.isNaN(r.duration) &&
+                                                    r.duration !== Infinity
+                                                )
+                                                    r.currentTime = 0
+                                            } catch {}
+
+                                            const bot = botVoiceRef.current
+                                            if (SOUND_ENABLED && bot) {
+                                                try {
+                                                    bot.currentTime = 0
+                                                    await bot.play() // attempt real audio
+                                                    stopIncallSim() // audio OK → no sim
+                                                } catch {
+                                                    startIncallSim() // autoplay blocked → simulate
+                                                }
+                                            } else {
+                                                startIncallSim() // no audio → simulate
+                                            }
+                                        }}
+                                        textColor="#000"
+                                    />
+                                    <CallButton
+                                        type="decline"
+                                        label="Decline"
+                                        onClick={() => setPhase("incoming")} // stay here (no landing)
+                                        textColor="#000"
+                                    />
+                                </div>
+
+                                {showStartVolumeModal && (
+                                    <Portal>
+                                        <div
+                                            role="dialog"
+                                            aria-modal="true"
+                                            style={overlayModalWrapFixed}
+                                        >
+                                            <div style={overlayCard}>
+                                                <div
+                                                    style={{
+                                                        fontSize: 18,
+                                                        fontWeight: 800,
+                                                        marginBottom: 8,
+                                                    }}
+                                                >
+                                                    Turn up your volume for the
+                                                    call.
+                                                </div>
+                                                <button
+                                                    onClick={() => {
+                                                        setShowStartVolumeModal(
+                                                            false
+                                                        )
+                                                        setVolumeAllowed(true)
+                                                        if (
+                                                            SOUND_ENABLED &&
+                                                            ringtoneRef.current
+                                                        ) {
+                                                            try {
+                                                                ringtoneRef.current.currentTime = 0
+                                                                ringtoneRef.current
+                                                                    .play()
+                                                                    .catch(
+                                                                        () => {}
+                                                                    )
+                                                            } catch {}
+                                                        }
+                                                    }}
+                                                    style={modalOkBtn}
+                                                >
+                                                    OK
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </Portal>
+                                )}
+
+                                {incomingOverlay && (
+                                    <Portal>
+                                        <div
+                                            role="dialog"
+                                            aria-modal="true"
+                                            style={overlayModalWrapFixed}
+                                        >
+                                            <div style={overlayCard}>
+                                                <div
+                                                    style={{
+                                                        fontSize: 18,
+                                                        fontWeight: 800,
+                                                        marginBottom: 8,
+                                                    }}
+                                                >
+                                                    Pick Call to experience the
+                                                    world of AI agents.
+                                                </div>
+                                                <button
+                                                    onClick={() =>
+                                                        setIncomingOverlay(
+                                                            false
+                                                        )
+                                                    }
+                                                    style={modalOkBtn}
+                                                >
+                                                    OK
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </Portal>
+                                )}
+                            </motion.div>
+                        )}
+
+                        {/* In-Call */}
+                        {phase === "incall" && (
+                            <motion.div
+                                key="incall"
+                                style={dialerBody}
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 1 }}
+                                exit={{ opacity: 0 }}
+                            >
+                                <div style={callTop}>
+                                    <SquareNLogo size={64} />
+                                    <div
+                                        style={{
+                                            fontSize: 18,
+                                            fontWeight: 800,
+                                            ...nudgeDown,
+                                        }}
+                                    >
+                                        Nugget AI Call Support
+                                    </div>
+                                    <div
+                                        style={{
+                                            fontSize: 12,
+                                            opacity: 0.7,
+                                            marginTop: 4,
+                                            ...nudgeDown,
+                                        }}
+                                    >
+                                        {formatClock(callElapsed)}
+                                    </div>
+                                </div>
+
+                                <div style={callTranscriptPane}>
+                                    <div
+                                        style={{
+                                            maxWidth: 320,
+                                            textAlign: "center",
+                                            ...nudgeDown,
+                                        }}
+                                    >
+                                        <motion.div
+                                            key={`before-${callBefore}`}
+                                            initial={{ opacity: 0, y: -4 }}
+                                            animate={{ opacity: 0.6, y: 0 }}
+                                            transition={{ duration: 0.25 }}
+                                            style={lineBefore}
+                                        >
+                                            {callBefore || " "}
+                                        </motion.div>
+                                        <motion.div
+                                            key={`now-${callNow}`}
+                                            initial={{
+                                                opacity: 0,
+                                                scale: 0.98,
+                                            }}
+                                            animate={{ opacity: 1, scale: 1 }}
+                                            transition={{ duration: 0.25 }}
+                                            style={lineNow}
+                                        >
+                                            {callNow || " "}
+                                        </motion.div>
+                                        <motion.div
+                                            key={`after-${callAfter}`}
+                                            initial={{ opacity: 0, y: 4 }}
+                                            animate={{ opacity: 0.6, y: 0 }}
+                                            transition={{ duration: 0.25 }}
+                                            style={lineAfter}
+                                        >
+                                            {callAfter || " "}
+                                        </motion.div>
+                                    </div>
+                                </div>
+
+                                <div style={endDock}>
+                                    <button
+                                        onClick={() => {
+                                            stopIncallSim()
+                                            try {
+                                                const b = botVoiceRef.current
+                                                if (b) {
+                                                    b.pause()
+                                                    if (
+                                                        !Number.isNaN(
+                                                            b.duration
+                                                        ) &&
+                                                        b.duration !== Infinity
+                                                    )
+                                                        b.currentTime = 0
+                                                }
+                                            } catch {}
+
+                                            logEvent(
+                                                "navigate_whatsapp_from_end_call"
+                                            )
+                                            try {
+                                                ringtoneRef.current?.pause()
+                                                if (ringtoneRef.current)
+                                                    ringtoneRef.current.currentTime = 0
+                                                botVoiceRef.current?.pause()
+                                                if (botVoiceRef.current)
+                                                    botVoiceRef.current.currentTime = 0
+                                            } catch {}
+                                            setShowHUN(false)
+                                            setShowIncallNudge(false)
+                                            setPhase("chat")
+                                            if (!messages.length) {
+                                                setMessages([
+                                                    {
+                                                        id: "seed",
+                                                        from: "bot",
+                                                        text: "You can continue here.",
+                                                        meta: {
+                                                            time: mkTimeNow(),
+                                                        },
+                                                    },
+                                                ])
+                                            }
+                                        }}
+                                        style={endKnob}
+                                        title="End call"
+                                    >
+                                        <IconCrossWhite size={18} />
+                                    </button>
+                                </div>
+                            </motion.div>
+                        )}
+
+                        {/* Chat */}
+                        {phase === "chat" && (
+                            <motion.div
+                                key="chat"
+                                style={waChatWrap}
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 1 }}
+                                exit={{ opacity: 0 }}
+                            >
+                                <WAHeader />
+
+                                {/* Spotlight overlay for Pay Now */}
+                                <CtaNudgeOverlay
+                                    visible={showPayNowOverlay}
+                                    targetRef={payNowBtnRef as any}
+                                    message="Tap ‘Pay Now’ to continue."
+                                    onClose={() => setShowPayNowOverlay(false)}
+                                />
+
+                                <div style={waChatFeedBody} ref={chatFeedRef}>
+                                    <div
+                                        style={{
+                                            display: "grid",
+                                            placeItems: "center",
+                                            margin: "10px 0 8px 0",
+                                        }}
+                                    >
+                                        <div
+                                            style={{
+                                                fontSize: 11,
+                                                background: "#FFFFFF",
+                                                color: "#111",
+                                                padding: "4px 10px",
+                                                borderRadius: 999,
+                                                border: `1px solid rgba(0,0,0,0.08)`,
+                                                boxShadow:
+                                                    "0 1px 2px rgba(0,0,0,0.06)",
+                                                fontWeight: 600,
+                                                letterSpacing: 0.2,
+                                                ...nudgeDown,
+                                            }}
+                                        >
+                                            TODAY
+                                        </div>
+                                    </div>
+
+                                    <div
+                                        style={{
+                                            ...waMetaBanner,
+                                            ...nudgeDown,
+                                        }}
+                                    >
+                                        <div
+                                            style={{
+                                                width: 18,
+                                                height: 18,
+                                                borderRadius: 999,
+                                                background: "#95D5C7",
+                                            }}
+                                        />
+                                        <span>
+                                            This business uses a secure service
+                                            from Meta to manage this chat. Tap
+                                            to learn more.
+                                        </span>
+                                    </div>
+
+                                    {messages.filter(Boolean).map((m) => (
+                                        <React.Fragment key={m.id}>
+                                            <WABubble
+                                                from={m.from}
+                                                meta={m.meta}
+                                            >
+                                                <span style={{ color: "#111" }}>
+                                                    {m.text}
+                                                </span>
+                                            </WABubble>
+                                            {(m.cta || m.ctas) && (
+                                                <div
+                                                    style={{
+                                                        display: "flex",
+                                                        justifyContent:
+                                                            "flex-start",
+                                                        padding:
+                                                            "0 6px 6px 6px",
+                                                        gap: 8,
+                                                        flexWrap: "wrap",
+                                                    }}
+                                                >
+                                                    {m.cta && (
+                                                        <CtaButtonStatic
+                                                            ref={
+                                                                m.cta
+                                                                    .refHook as any
+                                                            }
+                                                            onClick={
+                                                                m.cta.onClick
+                                                            }
+                                                            label={m.cta.label}
+                                                        />
+                                                    )}
+                                                    {m.ctas?.map((c, idx) => (
+                                                        <CtaButtonStatic
+                                                            key={`${m.id}-cta-${idx}`}
+                                                            ref={
+                                                                c.refHook as any
+                                                            }
+                                                            onClick={c.onClick}
+                                                            label={c.label}
+                                                        />
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </React.Fragment>
+                                    ))}
+
+                                    <div style={{ height: BOTTOM_OFFSET }} />
+                                </div>
+                            </motion.div>
+                        )}
+
+                        {/* Full-screen UPI Gateway */}
+                        {phase === "gateway" && (
+                            <motion.div
+                                key="gateway"
+                                style={gatewayScreenWrap}
+                                initial={{ x: 40, opacity: 0 }}
+                                animate={{ x: 0, opacity: 1 }}
+                                exit={{ x: -40, opacity: 0 }}
+                            >
+                                <UPIStepper
+                                    amount={UPI_PAY_AMOUNT}
+                                    payee={UPI_PAYEE_NAME}
+                                    vpa={UPI_PAYEE_VPA}
+                                    onExitToChat={() => setPhase("chat")}
+                                    onDone={() => {
+                                        logEvent("gateway_success")
+                                        // close any conflicting spotlights
+                                        setShowIncallNudge(false)
+                                        setShowPayNowOverlay(false)
+                                        showHunOnce()
+                                        pingNotifOnce("hun")
+
+                                        setTimeout(
+                                            () => setShowHUN(false),
+                                            20000
+                                        ) // give more tap time
+                                    }}
+                                />
+                            </motion.div>
+                        )}
+
+                        {/* Handoff */}
+                        {phase === "handoff" && <HandoffScreen />}
+                    </AnimatePresence>
+                </div>
+            </PhoneScaler>
+        </FullScreenPortal>
+    )
+}
+
+/* ========= Helpers referenced from your utils/layouts (kept external as you said) ========= */
+// formatClock, delay, CallButton, WAHeader, WABubble, CtaButtonStatic,
+// plus all style objects: absFill, dialerWrap, dialerBody, callTop, callTranscriptPane,
+// endDock, endKnob, waChatWrap, waChatFeedBody, waMetaBanner, ctaBtn, ctaBtnSecondary,
+// overlayModalWrapFixed, overlayCard, modalOkBtn, providerContinueBtn, vpaField,
+// fsWrap, fsHeader, headerBack, nudgeDown, avatar, verifiedTick, upiDot,
+// brandRow, paytmHeader, paytmHeaderIcon, successCardPaytm, okTickBadge, avatarSoft,
+// padWrap, padKey, padKeyOk, padKeyOkDisabled, padKeyBk, lineBefore, lineNow, lineAfter,
+// VolumeBanner, gatewayScreenWrap
+
+/* CTA button (incl. Pay Now) */
+const CtaButtonStatic = React.forwardRef(function CtaButtonStatic(
+    { onClick, label }: { onClick: () => void; label: string },
+    ref: React.ForwardedRef<HTMLButtonElement>
+) {
+    // 🔁 Replaced waCtaStandalone with a local, self-contained base
+    const base: React.CSSProperties = {
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "10px 14px",
+        borderRadius: 12,
+        border: "1px solid rgba(0,0,0,0.12)",
+        background: "#FFFFFF",
+        fontWeight: 800,
+        cursor: "pointer",
+    }
+    const payNow = label.toLowerCase() === "pay now"
+    return (
+        <button
+            ref={ref}
+            onClick={onClick}
+            style={{
+                ...base,
+                ...(payNow
+                    ? {
+                          color: "#1677FF",
+                          border: "2px solid #1677FF",
+                          boxShadow: "0 0 0 0 rgba(22,119,255,0.35)",
+                      }
+                    : {}),
+            }}
+        >
+            {label}
+        </button>
+    )
+})
+
+/* ---- WA Header ---- */
+function WAHeader() {
+    return (
+        <div
+            style={{
+                height: 56,
+                background: wa.header,
+                color: "#fff",
+                display: "grid",
+                gridTemplateColumns: "auto 1fr auto",
+                alignItems: "center",
+                gap: 10,
+                padding: "0 12px",
+                top: 20,
+            }}
+        >
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <IconChevron />
+                {/* 🔁 Inlined avatar style instead of waHeaderAvatar */}
+                <div
+                    style={{
+                        width: 28,
+                        height: 28,
+                        borderRadius: 8,
+                        background: "#000",
+                        color: "#fff",
+                        display: "grid",
+                        placeItems: "center",
+                        fontWeight: 900,
+                    }}
+                >
+                    n
+                </div>
+            </div>
+            <div style={{ lineHeight: 1 }}>
+                <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 2 }}>
+                    Nugget Payments
+                </div>
+                <div style={{ fontSize: 10, opacity: 0.85 }}>
+                    Business Account
+                </div>
+            </div>
+            {/* ✅ Fixed-size icon buttons to prevent distortion */}
+            <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
+                <button
+                    type="button"
+                    aria-label="Call"
+                    style={{
+                        width: 32,
+                        height: 32,
+                        borderRadius: 9999,
+                        background: "transparent",
+                        display: "grid",
+                        placeItems: "center",
+                        padding: 0,
+                        border: "none",
+                        cursor: "pointer",
+                    }}
+                >
+                    <WAHeaderPhoneIcon size={22} stroke="#FFFFFF" />
+                </button>
+                <button
+                    type="button"
+                    aria-label="More options"
+                    style={{
+                        width: 32,
+                        height: 32,
+                        borderRadius: 9999,
+                        background: "transparent",
+                        display: "grid",
+                        placeItems: "center",
+                        padding: 0,
+                        border: "none",
+                        cursor: "pointer",
+                    }}
+                >
+                    <IconDots />
+                </button>
+            </div>
+        </div>
+    )
+}
+/* ---- Bubbles ---- */
+function WABubble({
+    from,
+    children,
+    meta,
+}: {
+    from: "bot" | "user"
+    children: React.ReactNode
+    meta?: { time?: string; status?: "sent" | "delivered" | "read" }
+}) {
+    const isBot = from === "bot"
+    const bubble: React.CSSProperties = {
+        background: isBot ? wa.bot : wa.user,
+        color: "#111",
+        borderRadius: isBot ? "16px 16px 16px 8px" : "16px 16px 8px 16px",
+        padding: "10px 12px 6px 12px",
+        maxWidth: "86%",
+        boxShadow: "0 1px 2px rgba(0,0,0,0.10)",
+        lineHeight: 1.3,
+        position: "relative",
+        display: "inline-flex",
+        flexDirection: "column",
+        gap: 6,
+    }
+    const tail: any = {
+        position: "absolute",
+        width: 10,
+        height: 10,
+        top: 10,
+        transform: "translateY(2px) rotate(45deg)",
+        background: isBot ? wa.bot : wa.user,
+        boxShadow: isBot
+            ? "-1px 1px 1px rgba(0,0,0,0.06)"
+            : "1px 1px 1px rgba(0,0,0,0.06)",
+        [isBot ? "left" : "right"]: -4,
+    }
+    const footer: React.CSSProperties = {
+        alignSelf: "flex-end",
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        fontSize: 11,
+        color: "rgba(17,17,17,0.55)",
+        paddingTop: 2,
+    }
+    const tickColor = meta?.status === "read" ? wa.tickBlue : wa.tickGrey
+
+    return (
+        <div
+            style={{
+                display: "flex",
+                justifyContent: isBot ? "flex-start" : "flex-end",
+                padding: "0 6px",
+            }}
+        >
+            <div style={bubble}>
+                <div style={tail} aria-hidden />
+                {children}
+                <div style={footer}>
+                    {meta?.time && <span>{meta.time}</span>}
+                    {!isBot && <DoubleTick color={tickColor} />}
+                </div>
+            </div>
+        </div>
+    )
+}
+
+/* ---- Layout styles ---- */
+const absFill: React.CSSProperties = {
+    position: "absolute",
+    inset: 0,
+    display: "grid",
+    placeItems: "center",
+    padding: 24,
+    background: "#FFFFFF",
+}
+const dialerWrap: React.CSSProperties = {
+    position: "absolute",
+    inset: 0,
+    display: "grid",
+    gridTemplateRows: "auto 1fr auto",
+    alignItems: "center",
+    justifyItems: "center",
+    background: "linear-gradient(180deg,#FFFFFF 0%, #F6FAFF 45%, #EDF3FF 100%)",
+    padding: 16,
+}
+const dialerBody: React.CSSProperties = {
+    position: "absolute",
+    inset: 0,
+    display: "grid",
+    gridTemplateRows: "auto 1fr auto",
+    background: "#FFFFFF",
+    color: color.inCallText,
+    borderTop: `1px solid rgba(0,0,0,0.08)`,
+}
+const callTop: React.CSSProperties = {
+    background: "#FFFFFF",
+    display: "grid",
+    alignContent: "center",
+    justifyItems: "center",
+    rowGap: 8,
+    paddingTop: 52, // room for green call bar overlay
+    paddingBottom: 12,
+    borderBottom: `1px solid rgba(0,0,0,0.08)`,
+}
+const callTranscriptPane: React.CSSProperties = {
+    background: "#FFFFFF",
+    display: "grid",
+    placeItems: "center",
+    padding: "16px 16px 6px 16px",
+    paddingBottom: 220,
+}
+const lineBefore: React.CSSProperties = {
+    color: "rgba(10,31,68,0.55)",
+    fontSize: 13,
+    textAlign: "center",
+    minHeight: 18,
+}
+const lineNow: React.CSSProperties = {
+    fontSize: 18,
+    fontWeight: 800,
+    textAlign: "center",
+    margin: "10px 0",
+    minHeight: 22,
+}
+const lineAfter: React.CSSProperties = {
+    color: "rgba(10,31,68,0.55)",
+    fontSize: 13,
+    textAlign: "center",
+    minHeight: 18,
+}
+
+/* End call */
+const endDock: React.CSSProperties = {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: "calc(180px + env(safe-area-inset-bottom))",
+    display: "grid",
+    placeItems: "center",
+    zIndex: 90,
+}
+const endKnob: React.CSSProperties = {
+    width: 68,
+    height: 68,
+    borderRadius: 999,
+    border: 0,
+    background: color.red,
+    boxShadow: "0 16px 36px rgba(225,29,72,.25)",
+    cursor: "pointer",
+    display: "grid",
+    placeItems: "center",
+}
+
+/* Chat */
+const waChatWrap: React.CSSProperties = {
+    position: "absolute",
+    inset: 0,
+    display: "grid",
+    gridTemplateRows: "auto minmax(0,1fr)",
+    background: wa.bg,
+    color: "#111",
+    overflow: "hidden",
+}
+const waChatFeedBody: React.CSSProperties = {
+    padding: `10px 12px calc(${BOTTOM_OFFSET}px + env(safe-area-inset-bottom)) 12px`,
+    display: "grid",
+    gap: 10,
+    alignContent: "start",
+    overflowY: "auto",
+    background: wa.bg,
+    minHeight: 0,
+}
+const waMetaBanner: React.CSSProperties = {
+    margin: "0 8px 12px 8px",
+    background: "#D1F0E8",
+    color: "#134E4A",
+    padding: "8px 10px",
+    borderRadius: 10,
+    fontSize: 12,
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    boxShadow: "0 1px 1.5px rgba(0,0,0,0.06)",
+    border: "1px solid rgba(0,0,0,0.05)",
+}
+const waHeaderAvatar: React.CSSProperties = {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    background: "#000",
+    color: "#fff",
+    display: "grid",
+    placeItems: "center",
+    fontWeight: 800,
+}
+const waCtaStandalone: React.CSSProperties = {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "10px 16px",
+    borderRadius: 999,
+    background: "#FFFFFF",
+    color: wa.linkBlue,
+    fontWeight: 700,
+    border: "0",
+    cursor: "pointer",
+    boxShadow: "0 1px 2px rgba(0,0,0,0.10)",
+    lineHeight: 1,
+}
+
+/* Gateway + FS stepper styles */
+const gatewayScreenWrap: React.CSSProperties = {
+    position: "absolute",
+    inset: 0,
+    background: "#FFFFFF",
+    display: "grid",
+}
+const fsWrap: React.CSSProperties = {
+    position: "absolute",
+    inset: 0,
+    display: "grid",
+    gridTemplateRows: "auto 1fr",
+    background: "#fff",
+}
+const fsHeader: React.CSSProperties = {
+    height: 72,
+    display: "grid",
+    gridTemplateColumns: "auto 1fr auto",
+    alignItems: "center",
+    gap: 10,
+    padding: "0 12px",
+    borderBottom: "1px solid rgba(0,0,0,0.06)",
+}
+const headerBack: React.CSSProperties = {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    border: "1px solid rgba(0,0,0,0.1)",
+    background: "#fff",
+    fontSize: 22,
+    cursor: "pointer",
+}
+const avatar: React.CSSProperties = {
+    width: 36,
+    height: 36,
+    borderRadius: 999,
+    background: "#F1C0CF",
+    display: "grid",
+    placeItems: "center",
+    fontWeight: 800,
+    color: "#111",
+}
+const verifiedTick: React.CSSProperties = {
+    width: 18,
+    height: 18,
+    borderRadius: 999,
+    background: "#22c55e",
+    color: "#fff",
+    display: "grid",
+    placeItems: "center",
+    fontSize: 12,
+    fontWeight: 900,
+}
+const upiDot: React.CSSProperties = {
+    width: 16,
+    height: 16,
+    borderRadius: 999,
+    background: "linear-gradient(45deg,#34A853,#FBBC05,#4285F4)",
+    border: "1px solid rgba(0,0,0,0.06)",
+}
+const fsBodyNoScroll: React.CSSProperties = {
+    padding: "16px",
+    display: "grid",
+    gap: 14,
+    alignContent: "start",
+    overflow: "hidden",
+}
+const vpaField: React.CSSProperties = {
+    width: "100%",
+    height: 48,
+    borderRadius: 24,
+    border: 0,
+    background: "rgba(0,0,0,0.1)",
+    padding: "0 16px",
+    fontWeight: 700,
+    color: "#111",
+    outline: "none",
+}
+const addMsgBtn: React.CSSProperties = {
+    marginTop: 12,
+    padding: "12px 16px",
+    borderRadius: 12,
+    border: 0,
+    background: "rgba(0,0,0,0.06)",
+    color: "rgba(0,0,0,0.45)",
+    fontWeight: 700,
+}
+const stickyCta: React.CSSProperties = {
+    marginTop: 18,
+    width: "100%",
+    padding: "14px 18px",
+    borderRadius: 14,
+    border: 0,
+    background: "#16A4FF",
+    color: "#fff",
+    fontWeight: 900,
+    fontSize: 16,
+    cursor: "pointer",
+    boxShadow: "0 12px 28px rgba(22,164,255,.24)",
+}
+const providerContinueBtn: React.CSSProperties = {
+    marginTop: 12,
+    width: "100%",
+    padding: "12px 16px",
+    borderRadius: 12,
+    border: 0,
+    background: "#1677FF",
+    color: "#fff",
+    fontWeight: 900,
+    cursor: "pointer",
+    boxShadow: "0 8px 18px rgba(22,119,255,.22)",
+}
+const brandRow: React.CSSProperties = {
+    marginTop: 8,
+    fontSize: 12,
+    color: "rgba(0,0,0,0.6)",
+}
+
+/* Paytm-style success overrides */
+const paytmHeader: React.CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "auto 1fr auto",
+    alignItems: "center",
+    padding: "0 6px 10px 6px",
+}
+const paytmHeaderIcon: React.CSSProperties = {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    border: "1px solid rgba(0,0,0,0.08)",
+    background: "#fff",
+    display: "grid",
+    placeItems: "center",
+    fontSize: 18,
+    cursor: "pointer",
+}
+const successCardPaytm: React.CSSProperties = {
+    borderRadius: 22,
+    background: "rgba(30,144,255,0.08)",
+    padding: 18,
+    border: "1px solid rgba(0,0,0,0.08)",
+    boxShadow: "0 6px 18px rgba(0,0,0,0.06) inset, 0 2px 10px rgba(0,0,0,0.04)",
+}
+const avatarSoft: React.CSSProperties = {
+    width: 44,
+    height: 44,
+    borderRadius: 999,
+    background: "#D7ECFF",
+    color: "#0A1F44",
+    display: "grid",
+    placeItems: "center",
+    fontWeight: 900,
+}
+const okTickBadge: React.CSSProperties = {
+    width: 22,
+    height: 22,
+    borderRadius: 999,
+    background: "#16a34a",
+    color: "#fff",
+    display: "grid",
+    placeItems: "center",
+    fontSize: 12,
+    fontWeight: 900,
+}
+const paytmDoneBtn: React.CSSProperties = {
+    marginTop: 18,
+    width: "100%",
+    padding: "16px 18px",
+    borderRadius: 24,
+    border: 0,
+    background: "linear-gradient(180deg,#1AA3FF,#1592F6)",
+    color: "#fff",
+    fontWeight: 900,
+    fontSize: 18,
+    cursor: "pointer",
+    boxShadow: "0 18px 40px rgba(26,163,255,.25)",
+}
+
+/* Numeric keypad styles */
+const padWrap: React.CSSProperties = {
+    marginTop: 12,
+    display: "grid",
+    gridTemplateColumns: "repeat(3, 1fr)",
+    gap: 10,
+}
+const padKey: React.CSSProperties = {
+    height: 56,
+    borderRadius: 14,
+    border: "1px solid rgba(0,0,0,.10)",
+    background: "#fff",
+    fontSize: 20,
+    fontWeight: 700,
+    cursor: "pointer",
+    boxShadow: "0 1px 2px rgba(0,0,0,0.06)",
+}
+const padKeyBk: React.CSSProperties = { fontSize: 18 }
+const padKeyOk: React.CSSProperties = {
+    background: "#16A4FF",
+    color: "#fff",
+    border: 0,
+    boxShadow: "0 8px 20px rgba(22,164,255,.24)",
+}
+const padKeyOkDisabled: React.CSSProperties = {
+    background: "rgba(0,0,0,.06)",
+    color: "rgba(0,0,0,.45)",
+    border: 0,
+}
+
+/* Overlay helpers */
+const overlayModalWrapFixed: React.CSSProperties = {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(0,0,0,0.55)",
+    zIndex: 9998,
+    display: "grid",
+    placeItems: "center",
+    padding: 16,
+    pointerEvents: "auto", // ✅ allows OK button clicks
+}
+const overlayCard: React.CSSProperties = {
+    width: "100%",
+    maxWidth: 360,
+    background: "#FFFFFF",
+    borderRadius: 16,
+    padding: "20px 16px",
+    textAlign: "center",
+    color: "#000",
+    boxShadow: "0 30px 80px rgba(0,0,0,0.35)",
+}
+const modalOkBtn: React.CSSProperties = {
+    marginTop: 10,
+    padding: "10px 14px",
+    borderRadius: 12,
+    border: 0,
+    background: "#1677FF",
+    color: "#FFFFFF",
+    fontWeight: 900,
+    cursor: "pointer",
+    boxShadow: "0 6px 16px rgba(22,119,255,.22)",
+}
+
+/* Buttons */
+const ctaBtn: React.CSSProperties = {
+    minHeight: 56,
+    minWidth: 240,
+    padding: "16px 22px",
+    borderRadius: 16,
+    border: 0,
+    background: "#6648BA",
+    color: "#FFFFFF",
+    fontWeight: 900,
+    fontSize: 18,
+    cursor: "pointer",
+    boxShadow: "0 6px 16px rgba(30,58,138,.18)",
+}
+const ctaBtnSecondary: React.CSSProperties = {
+    ...ctaBtn,
+    background: "#FFFFFF",
+    color: "#1E3A8A",
+    border: "1px solid rgba(10,31,68,0.12)",
+}
+
+/* --- global text nudge (move copy down slightly without changing layout) */
+const TEXT_NUDGE_Y = 10
+const nudgeDown: React.CSSProperties = {
+    transform: `translateY(${TEXT_NUDGE_Y}px)`,
+}
+
+/* Property controls */
+addPropertyControls(Upigff as any, {
+    mobileWidth: {
+        type: ControlType.Number,
+        title: "W",
+        defaultValue: 390,
+        min: 320,
+        max: 480,
+        displayStepper: true,
+    },
+    mobileHeight: {
+        type: ControlType.Number,
+        title: "H",
+        defaultValue: 844,
+        min: 640,
+        max: 932,
+        displayStepper: true,
+    },
+    uploadImg: {
+        type: ControlType.File,
+        title: "Upload Shot",
+        allowedFileTypes: ["png", "jpg", "jpeg", "webp"],
+    },
+})
+
+/* ---- Utils ---- */
+// PATCH: safe audio reset
+function safeReset(a?: HTMLAudioElement | null) {
+    if (!a) return
+    try {
+        a.pause()
+    } catch {}
+    try {
+        if (!Number.isNaN(a.duration) && a.duration !== Infinity)
+            a.currentTime = 0
+    } catch {}
+}
+
+// play only if sounds allowed; swallow autoplay errors
+// play only if sounds allowed; swallow autoplay errors
+async function playSafe(
+    a?: HTMLAudioElement | null,
+    opts: { reset?: boolean; allow?: boolean } = {}
+) {
+    const { reset = true, allow = true } = opts
+    if (!SOUND_ENABLED || !allow || !a) return
+    try {
+        if (reset && !Number.isNaN(a.duration) && a.duration !== Infinity)
+            a.currentTime = 0
+        await a.play()
+    } catch {}
+}
+
+function formatClock(t: number) {
+    const m = Math.floor(t / 60)
+    const s = Math.floor(t % 60)
+    return `${m}:${s.toString().padStart(2, "0")}`
+}
+function delay(ms: number) {
+    return new Promise<void>((res) => setTimeout(res, ms))
+}
+
+/* ---- Call buttons ---- */
+function CallButton({
+    type,
+    label,
+    onClick,
+    pulse,
+    textColor = "#0A1F44",
+}: {
+    type: "answer" | "decline"
+    label: string
+    onClick: () => void
+    pulse?: boolean
+    textColor?: string
+}) {
+    const theme =
+        type === "answer"
+            ? {
+                  bg: "linear-gradient(180deg,#10b981,#059669)",
+                  glow: "0 18px 36px rgba(16,185,129,.28)",
+              }
+            : {
+                  bg: "linear-gradient(180deg,#ef4444,#b91c1c)",
+                  glow: "0 18px 36px rgba(239,68,68,.28)",
+              }
+    const knob = (
+        <div
+            style={{
+                width: 92,
+                height: 92,
+                borderRadius: 999,
+                display: "grid",
+                placeItems: "center",
+                background: theme.bg,
+                color: "#fff",
+                boxShadow: theme.glow,
+                border: "none",
+            }}
+        >
+            <CallIcon type={type} />
+        </div>
+    )
+    return (
+        <button
+            onClick={onClick}
+            style={{
+                background: "transparent",
+                border: 0,
+                color: textColor,
+                display: "grid",
+                placeItems: "center",
+                gap: 10,
+                cursor: "pointer",
+            }}
+        >
+            {pulse ? (
+                <motion.div
+                    animate={{ scale: [1, 1.06, 1] }}
+                    transition={{
+                        repeat: Infinity,
+                        duration: 1.1,
+                        ease: "easeInOut",
+                    }}
+                >
+                    {knob}
+                </motion.div>
+            ) : (
+                knob
+            )}
+            <div style={{ fontSize: 16, opacity: 0.9 }}>{label}</div>
+        </button>
+    )
+}
+function CallIcon({ type }: { type: "answer" | "decline" }) {
+    return type === "answer" ? (
+        <svg
+            width="28"
+            height="28"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+        >
+            <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.08 4.18 2 2 0 0 1 4.06 2h3" />
+        </svg>
+    ) : (
+        <svg
+            width="28"
+            height="28"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+        >
+            <path d="M18 6 6 18M6 6l12 12" />
+        </svg>
+    )
+}
