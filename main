@@ -980,6 +980,112 @@ function CtaNudgeOverlay({
     )
 }
 
+function HunFullScreenBanner({
+    visible,
+    message,
+}: {
+    visible: boolean
+    message: string
+}) {
+    return (
+        <Portal>
+            <AnimatePresence>
+                {visible && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        style={{
+                            position: "fixed",
+                            inset: 0,
+                            background:
+                                "linear-gradient(180deg, rgba(7,94,84,0.92) 0%, rgba(7,94,84,0.7) 100%)",
+                            display: "flex",
+                            flexDirection: "column",
+                            alignItems: "center",
+                            justifyContent: "flex-start",
+                            padding: "96px 20px 40px",
+                            gap: 32,
+                            zIndex: 2147483646,
+                            pointerEvents: "none",
+                        }}
+                    >
+                        <motion.div
+                            initial={{ y: -20, opacity: 0 }}
+                            animate={{ y: 0, opacity: 1 }}
+                            exit={{ y: 10, opacity: 0 }}
+                            transition={{ type: "spring", stiffness: 360, damping: 32 }}
+                            style={{
+                                display: "grid",
+                                placeItems: "center",
+                                gap: 14,
+                                width: "min(480px, 100%)",
+                                background: "#FFFFFF",
+                                borderRadius: 24,
+                                padding: "28px 24px",
+                                boxShadow: "0 30px 90px rgba(0,0,0,0.45)",
+                                textAlign: "center",
+                                pointerEvents: "none",
+                            }}
+                        >
+                            <div
+                                style={{
+                                    fontSize: 22,
+                                    fontWeight: 900,
+                                    color: wa.header,
+                                }}
+                            >
+                                Payment confirmation ready on WhatsApp
+                            </div>
+                            <div
+                                style={{
+                                    fontSize: 18,
+                                    fontWeight: 700,
+                                    lineHeight: 1.4,
+                                    color: "#0A1F44",
+                                }}
+                            >
+                                {message}
+                            </div>
+                            <div
+                                style={{
+                                    fontSize: 14,
+                                    fontWeight: 600,
+                                    color: "rgba(10,31,68,0.85)",
+                                }}
+                            >
+                                Tap the WhatsApp notification banner above to view the receipt and
+                                continue the conversation.
+                            </div>
+                        </motion.div>
+
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.92 }}
+                            animate={{ opacity: [0.5, 1, 0.5], scale: [0.9, 1.05, 0.9] }}
+                            transition={{ repeat: Infinity, duration: 1.6, ease: "easeInOut" }}
+                            style={{
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                gap: 12,
+                                padding: "12px 20px",
+                                borderRadius: 999,
+                                background: "rgba(255,255,255,0.2)",
+                                color: "#FFFFFF",
+                                fontWeight: 800,
+                                letterSpacing: 0.4,
+                                textTransform: "uppercase",
+                            }}
+                        >
+                            Tap the green WhatsApp banner now
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+        </Portal>
+    )
+}
+
 /* ========= UPI Stepper (proceed screen removed; go straight to PIN) ========= */
 function UPIStepper({
     amount = UPI_PAY_AMOUNT,
@@ -2029,6 +2135,7 @@ export default function Upigff({
 
     // HUN + banner
     const [showHUN, setShowHUN] = useState(false)
+    const [showHunBanner, setShowHunBanner] = useState(false)
     const [showIncallNudge, setShowIncallNudge] = useState(false)
     const hunButtonRef = useRef<HTMLButtonElement | null>(null)
     const incallHunShownRef = useRef(false)
@@ -2044,6 +2151,7 @@ export default function Upigff({
             hunTimerRef.current = null
         }
         setShowHUN(false)
+        setShowHunBanner(false)
     }
 
     function showHun({
@@ -2063,6 +2171,7 @@ export default function Upigff({
             hunTimerRef.current = window.setTimeout(() => {
                 hunTimerRef.current = null
                 setShowHUN(false)
+                setShowHunBanner(false)
             }, timeoutMs)
         }
     }
@@ -2074,6 +2183,7 @@ export default function Upigff({
         setArmHun(true)
         // if any other spotlights could collide, hide them:
         setShowPayNowOverlay(false)
+        setShowHunBanner(true)
     }
 
     // ⬇️ removed unused top-level continueBtnRef (there’s a scoped one inside UPIStepper)
@@ -2130,6 +2240,7 @@ export default function Upigff({
         ])
         setShowIncallNudge(false)
         setShowHUN(false)
+        setShowHunBanner(false)
         setTimeout(simulateUploadAndUPIFlow, 350)
     }, [phase])
 
@@ -2355,6 +2466,7 @@ export default function Upigff({
                             topOffset={0}
                             onTap={() => {
                                 setShowHUN(false)
+                                setShowHunBanner(false)
                                 setShowIncallNudge(false)
                                 setPhase("chat")
                                 const now = new Date().toLocaleTimeString([], {
@@ -2429,6 +2541,11 @@ export default function Upigff({
                             }
                         />
                     </Portal>
+
+                    <HunFullScreenBanner
+                        visible={showHunBanner && showHUN}
+                        message={NUDGE_HUN}
+                    />
 
                     {/* Spotlight for HUN (optional nudge) */}
                     <CtaNudgeOverlay
@@ -2724,6 +2841,7 @@ export default function Upigff({
                                                     botVoiceRef.current.currentTime = 0
                                             } catch {}
                                             setShowHUN(false)
+                                            setShowHunBanner(false)
                                             setShowIncallNudge(false)
                                             setPhase("chat")
                                             if (!messages.length) {
@@ -2890,11 +3008,6 @@ export default function Upigff({
                                         setShowPayNowOverlay(false)
                                         showHunOnce()
                                         pingNotifOnce("hun")
-
-                                        setTimeout(
-                                            () => setShowHUN(false),
-                                            20000
-                                        ) // give more tap time
                                     }}
                                 />
                             </motion.div>
