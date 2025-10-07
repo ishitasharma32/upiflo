@@ -1019,8 +1019,14 @@ function HunFullScreenBanner({
                             transition={{ type: "spring", stiffness: 360, damping: 32 }}
                             style={{
                                 display: "grid",
-                                gap: 22,
-                                width: "min(520px, 100%)",
+                                placeItems: "center",
+                                gap: 14,
+                                width: "min(480px, 100%)",
+                                background: "#FFFFFF",
+                                borderRadius: 24,
+                                padding: "28px 24px",
+                                boxShadow: "0 30px 90px rgba(0,0,0,0.45)",
+                                textAlign: "center",
                                 pointerEvents: "auto",
                             }}
                         >
